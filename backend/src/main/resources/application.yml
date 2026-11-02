@@ -8,6 +8,9 @@ spring:
   # 从 backend 启动时读取根目录 .env；系统环境变量优先。
   config:
     import: optional:file:../.env[.properties]
+  jackson:
+    # 统一 Jackson 时区；LocalDateTime 本身不带时区，写入仍由 ChatTime 负责。
+    time-zone: Asia/Shanghai
   datasource:
     url: jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:3306}/mairy_chat?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
     username: ${DB_USERNAME:mairy_chat_user}

@@ -7,7 +7,7 @@ import com.mairy.chat.dto.ChatViews.MessageView;
 import com.mairy.chat.entity.Member;
 import com.mairy.chat.entity.Message;
 import com.mairy.chat.mapper.MessageMapper;
-import java.time.LocalDateTime;
+import com.mairy.chat.util.ChatTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -38,7 +38,7 @@ public class MessageService extends ServiceImpl<MessageMapper, Message> {
         return new MessagePage(rows.stream().map(this::toView).toList(), nextBeforeId, hasMore);
     }
 
-    /** 以服务端会话身份保存消息，事务提交后由控制器触发推送。 */
+    /** 以服务端会话身份和上海时间保存消息，事务提交后由控制器触发推送。 */
     @Transactional
     public MessageView send(Long roomId, String token, String content) {
         Member member = memberService.requireRoomSession(roomId, token);
@@ -47,7 +47,7 @@ public class MessageService extends ServiceImpl<MessageMapper, Message> {
         message.setMemberId(member.getId());
         message.setNickname(member.getNickname());
         message.setContent(content.strip());
-        message.setCreatedAt(LocalDateTime.now());
+        message.setCreatedAt(ChatTime.now());
         save(message);
         return toView(message);
     }

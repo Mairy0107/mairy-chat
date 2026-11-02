@@ -3,7 +3,7 @@ package com.mairy.chat.dto;
 import java.time.LocalDateTime;
 import java.util.List;
 
-/** 对外响应统一将主键转成字符串，避免前端长整数精度丢失。 */
+/** 对外主键统一转字符串；时间字段为上海本地时间，不携带偏移，前端直接展示。 */
 public final class ChatViews {
     /** 禁止实例化响应容器。 */
     private ChatViews() {

@@ -4,8 +4,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mairy.chat.dto.ChatViews.MessageView;
 import com.mairy.chat.entity.Member;
+import com.mairy.chat.util.ChatTime;
 import java.io.IOException;
-import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import lombok.RequiredArgsConstructor;
@@ -42,7 +42,7 @@ public class ChatSocketHandler extends TextWebSocketHandler {
         session.close(CloseStatus.POLICY_VIOLATION.withReason("Use REST to send messages"));
     }
 
-    /** 将已提交的消息推送给同房间连接，循环中不访问数据库。 */
+    /** 按上海时间校验会话并推送已提交消息，循环中不访问数据库。 */
     public void publish(Long roomId, MessageView message) {
         Map<String, WebSocketSession> sockets = rooms.get(roomId);
         if (sockets == null) {
@@ -59,7 +59,7 @@ public class ChatSocketHandler extends TextWebSocketHandler {
         for (WebSocketSession session : sockets.values()) {
             Member member = (Member) session.getAttributes().get(SessionHandshakeInterceptor.MEMBER_ATTRIBUTE);
             try {
-                if (!session.isOpen() || !member.getExpiresAt().isAfter(LocalDateTime.now())) {
+                if (!session.isOpen() || !member.getExpiresAt().isAfter(ChatTime.now())) {
                     disconnect(session);
                     continue;
                 }

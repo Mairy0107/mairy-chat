@@ -6,7 +6,7 @@ import com.mairy.chat.dto.ChatViews.PageView;
 import com.mairy.chat.dto.ChatViews.RoomView;
 import com.mairy.chat.entity.Room;
 import com.mairy.chat.mapper.RoomMapper;
-import java.time.LocalDateTime;
+import com.mairy.chat.util.ChatTime;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,12 +22,12 @@ public class RoomService extends ServiceImpl<RoomMapper, Room> {
                 result.getTotal(), page, size);
     }
 
-    /** 创建房间并返回页面所需信息。 */
+    /** 按上海时间创建房间并返回页面所需信息。 */
     @Transactional
     public RoomView createRoom(String name) {
         Room room = new Room();
         room.setName(name.strip());
-        room.setCreatedAt(LocalDateTime.now());
+        room.setCreatedAt(ChatTime.now());
         save(room);
         return toView(room);
     }
