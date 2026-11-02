@@ -1,16 +1,19 @@
-# 渚濊禆涓庢瀯寤轰骇鐗?node_modules/
+# Dependencies and build outputs
+node_modules/
 target/
 dist/
 coverage/
 
-# 鏈湴閰嶇疆涓庤繍琛屾棩蹇?.env
+# Local config and runtime logs
+.env
 .env.*
 !.env.example
 !.env.*.example
 !.env.production
 *.log
 
-# IDE 涓庣郴缁熸枃浠?.idea/
+# IDE / OS
+.idea/
 .vscode/
 *.iml
 .classpath
@@ -25,6 +28,6 @@ codex-*-last-message.txt
 backend-build*.log
 frontend-build*.log
 
-
+# Deploy secrets / local artifacts
 deploy/.env
 deploy/app.jar
