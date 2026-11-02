@@ -1,0 +1,25 @@
+services:
+  chat-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mairy-chat-api:latest
+    container_name: chat-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SERVER_ADDRESS: "0.0.0.0"
+      SERVER_PORT: "8080"
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      JAVA_OPTS: "-Xms64m -Xmx192m -XX:+UseSerialGC -XX:+ExitOnOutOfMemoryError -Dfile.encoding=UTF-8"
+    networks:
+      - website_website
+      - mysql_default
+
+networks:
+  website_website:
+    external: true
+  mysql_default:
+    external: true

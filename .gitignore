@@ -1,0 +1,30 @@
+# 渚濊禆涓庢瀯寤轰骇鐗?node_modules/
+target/
+dist/
+coverage/
+
+# 鏈湴閰嶇疆涓庤繍琛屾棩蹇?.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.production
+*.log
+
+# IDE 涓庣郴缁熸枃浠?.idea/
+.vscode/
+*.iml
+.classpath
+.project
+.settings/
+.DS_Store
+Thumbs.db
+codex-*.log
+codex-*-last-message.txt
+*-build*.log
+*-npm-install*.log
+backend-build*.log
+frontend-build*.log
+
+
+deploy/.env
+deploy/app.jar
