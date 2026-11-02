@@ -45,7 +45,7 @@ public class MessageController {
     public MessageView send(@PathVariable @Positive Long roomId,
                             @RequestHeader(value = "X-Session-Token", required = false) String token,
                             @Valid @RequestBody SendMessage request) {
-        MessageView message = messageService.send(roomId, token, request.content());
+        MessageView message = messageService.send(roomId, token, request);
         socketHandler.publish(roomId, message);
         return message;
     }

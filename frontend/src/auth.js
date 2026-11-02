@@ -5,6 +5,7 @@ export const auth = reactive({ token: localStorage.getItem('mairy.auth.token') |
 
 /** 登录成功后保存凭证与经服务端筛选的用户资料。 */
 export function saveLogin(result) {
+  window.dispatchEvent(new Event('mairy:lock-keys'))
   auth.token = result.token
   auth.user = result.user
   localStorage.setItem('mairy.auth.token', result.token)
@@ -12,6 +13,7 @@ export function saveLogin(result) {
 
 /** 退出或服务端返回401时清除本地登录态。 */
 export function clearLogin() {
+  window.dispatchEvent(new Event('mairy:lock-keys'))
   auth.token = ''
   auth.user = null
   localStorage.removeItem('mairy.auth.token')

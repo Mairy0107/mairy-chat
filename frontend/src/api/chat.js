@@ -58,9 +58,9 @@ export function listMessages(roomId, token, beforeId) {
   return request(`/rooms/${roomId}/messages?${query}`, { token })
 }
 
-/** 消息通过 REST 入库，WebSocket 只负责接收推送。 */
-export function sendMessage(roomId, token, content) {
-  return request(`/rooms/${roomId}/messages`, { method: 'POST', token, body: { content } })
+/** 仅传输客户端生成的密文信封，WebSocket 只负责接收推送。 */
+export function sendMessage(roomId, token, envelope) {
+  return request(`/rooms/${roomId}/messages`, { method: 'POST', token, body: envelope })
 }
 
 /** 使用同源路径建立房间实时连接，不打印带凭证的 URL。 */

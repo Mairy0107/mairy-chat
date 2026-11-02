@@ -2,6 +2,7 @@ package com.mairy.chat.service;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
+import com.mairy.chat.dto.ChatRequests.SendMessage;
 import com.mairy.chat.dto.ChatViews.MessagePage;
 import com.mairy.chat.dto.ChatViews.MessageView;
 import com.mairy.chat.entity.Member;
@@ -12,7 +13,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.transaction.annotation.Transactional;
 
 /** 消息业务复用 MyBatis-Plus 3.5.18 的 Spring 服务实现。 */
@@ -20,6 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class MessageService extends ServiceImpl<MessageMapper, Message> {
     private final MemberService memberService;
+    private final E2eeService e2ee;
 
     /** 按主键游标读取历史；实时插入不会挤动已有分页。 */
     public MessagePage history(Long roomId, String token, Long beforeId, int size) {
@@ -38,21 +43,40 @@ public class MessageService extends ServiceImpl<MessageMapper, Message> {
         return new MessagePage(rows.stream().map(this::toView).toList(), nextBeforeId, hasMore);
     }
 
-    /** 以服务端会话身份和上海时间保存消息，事务提交后由控制器触发推送。 */
+    /** 校验普通加密成员及密文元数据，以上海时间保存后由控制器推送。 */
     @Transactional
-    public MessageView send(Long roomId, String token, String content) {
+    public MessageView send(Long roomId, String token, SendMessage request) {
         Member member = memberService.requireRoomSession(roomId, token);
         if (Boolean.TRUE.equals(member.getStealth())) {
-            throw new org.springframework.web.server.ResponseStatusException(
-                    org.springframework.http.HttpStatus.FORBIDDEN, "隐身模式仅可阅读，请以普通模式进入后发送");
+            throw new ResponseStatusException(
+                    HttpStatus.FORBIDDEN, "隐身模式仅可阅读，请以普通模式进入后发送");
+        }
+        // 禁止明文降级，兼容仅限历史读取；服务端不接触解密密钥。
+        if (!Integer.valueOf(1).equals(request.enc())) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, "新消息必须使用端到端加密");
+        }
+        e2ee.requireSender(roomId, member);
+        E2eeService.decode(request.iv(), 12);
+        int length = E2eeService.decode(request.content(), -1).length;
+        if (length < 17 || length > 4016) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, "加密消息长度无效");
         }
         Message message = new Message();
         message.setRoomId(roomId);
         message.setMemberId(member.getId());
         message.setNickname(member.getNickname());
-        message.setContent(content.strip());
+        message.setContent(request.content());
+        message.setEnc(1);
+        message.setIv(request.iv());
         message.setCreatedAt(ChatTime.now());
-        save(message);
+        try {
+            save(message);
+        } catch (DuplicateKeyException exception) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT, "消息 IV 已使用，请重新发送");
+        }
         return toView(message);
     }
 
@@ -60,6 +84,6 @@ public class MessageService extends ServiceImpl<MessageMapper, Message> {
     private MessageView toView(Message message) {
         return new MessageView(message.getId().toString(), message.getRoomId().toString(),
                 message.getMemberId().toString(), message.getNickname(), message.getContent(),
-                message.getCreatedAt());
+                message.getEnc() == null ? 0 : message.getEnc(), message.getIv(), message.getCreatedAt());
     }
 }

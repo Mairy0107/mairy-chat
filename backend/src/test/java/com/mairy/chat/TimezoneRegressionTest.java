@@ -117,7 +117,7 @@ class TimezoneRegressionTest {
             return true;
         }).when(service).save(any(Message.class));
 
-        assertShanghaiTime(service.send(1L, TOKEN, "你好").createdAt());
+        assertShanghaiTime(service.send(1L, TOKEN, encryptedRequest()).createdAt());
     }
 
     /** 验证 UTC 环境不会将已过期的上海时间会话多放行八小时。 */
@@ -174,10 +174,12 @@ class TimezoneRegressionTest {
                         saved.setMemberId(message.getMemberId());
                         saved.setNickname(message.getNickname());
                         saved.setContent(message.getContent());
+                        saved.setEnc(message.getEnc());
+                        saved.setIv(message.getIv());
                         saved.setCreatedAt(message.getCreatedAt());
                         return true;
                     }).when(service).save(any(Message.class));
-                    MessageView sent = service.send(1L, TOKEN, "你好");
+                    MessageView sent = service.send(1L, TOKEN, encryptedRequest());
                     assertShanghaiTime(sent.createdAt());
                     LambdaQueryChainWrapper<Message> query = mock(LambdaQueryChainWrapper.class, RETURNS_SELF);
                     doReturn(query).when(query).eq(any(), any());
@@ -215,7 +217,7 @@ class TimezoneRegressionTest {
     private MessageService messageService() {
         MemberService members = mock(MemberService.class);
         when(members.requireRoomSession(1L, TOKEN)).thenReturn(member());
-        return spy(new MessageService(members));
+        return spy(new MessageService(members, mock(com.mairy.chat.service.E2eeService.class)));
     }
 
     /** 构造仍有效的上海时间会话。 */
@@ -255,8 +257,15 @@ class TimezoneRegressionTest {
         return service;
     }
 
+    /** 使用测试密文验证封装字段和上海时间保持一致。 */
+    private com.mairy.chat.dto.ChatRequests.SendMessage encryptedRequest() {
+        return new com.mairy.chat.dto.ChatRequests.SendMessage(
+                java.util.Base64.getEncoder().encodeToString(new byte[20]), 1,
+                java.util.Base64.getEncoder().encodeToString(new byte[12]));
+    }
+
     /** 构造带指定时间的消息推送数据。 */
     private MessageView messageView(LocalDateTime createdAt) {
-        return new MessageView("3", "1", "2", "测试员", "你好", createdAt);
+        return new MessageView("3", "1", "2", "测试员", "你好", 0, null, createdAt);
     }
 }

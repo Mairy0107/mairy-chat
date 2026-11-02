@@ -103,10 +103,14 @@ class AuthIntegrationTest {
         String roomToken = member.path("token").asText();
         mvc.perform(body(get("/api/rooms/{id}/messages", roomId).header("X-Session-Token", roomToken), ip, bob, null))
                 .andExpect(status().isForbidden());
-        call(post("/api/rooms/{id}/messages", roomId).header("X-Session-Token", roomToken), ip, alice, Map.of("content", "你好😀"));
+        // 新接口拒绝明文，模拟迁移前已有的旧明文记录验证兼容读取。
+        mvc.perform(body(post("/api/rooms/{id}/messages", roomId).header("X-Session-Token", roomToken), ip, alice,
+                Map.of("content", "你好😀", "enc", 0, "iv", "AAAAAAAAAAAAAAAA"))).andExpect(status().isBadRequest());
+        jdbc.update("INSERT INTO chat_message(room_id,member_id,nickname,content,created_at) VALUES(?,?,?,?,?)",
+                Long.valueOf(roomId), member.path("id").asLong(), "alice", "旧明文", ChatTime.now());
         JsonNode invisible = call(post("/api/rooms/{id}/members", roomId), ip, admin, Map.of("stealth", true));
         mvc.perform(body(post("/api/rooms/{id}/messages", roomId).header("X-Session-Token", invisible.path("token").asText()),
-                ip, admin, Map.of("content", "隐身发送"))).andExpect(status().isForbidden());
+                ip, admin, Map.of("content", "AAAAAAAAAAAAAAAAAAAAAAAAAAA=", "enc", 1, "iv", "AAAAAAAAAAAAAAAA"))).andExpect(status().isForbidden());
         assertEquals(1, call(get("/api/friends/search").param("q", "#0003"), ip, alice, null).size());
         call(post("/api/friends/{id}", second.path("id").asText()), ip, alice, null);
         mvc.perform(body(post("/api/friends/{id}", first.path("id").asText()), ip, bob, null)).andExpect(status().isConflict());
@@ -197,6 +201,83 @@ class AuthIntegrationTest {
         login(ip, "admin");
         mvc.perform(options("/api/rooms").header("Origin", "http://evil.example")
                 .header("Access-Control-Request-Method", "GET")).andExpect(status().isForbidden());
+    }
+
+    /** 覆盖密文持久化、管理员隔离、成员授权与公钥不可替换边界。 */
+    @Test
+    @org.junit.jupiter.api.Order(5)
+    void e2eeAuthorizationAndOpaqueStorage() throws Exception {
+        String ip = "127.0.0.20";
+        String ownerId = call(post("/api/auth/register"), ip, null, registration("keyowner", "c".repeat(64))).path("id").asText();
+        String peerId = call(post("/api/auth/register"), ip, null, registration("keypeer", "c".repeat(64))).path("id").asText();
+        String owner = login(ip, "keyowner");
+        String peer = login(ip, "keypeer");
+        String admin = login(ip, "admin");
+        var generator = java.security.KeyPairGenerator.getInstance("RSA");
+        generator.initialize(3072);
+        String ownerPublic = java.util.Base64.getEncoder().encodeToString(generator.generateKeyPair().getPublic().getEncoded());
+        String peerPublic = java.util.Base64.getEncoder().encodeToString(generator.generateKeyPair().getPublic().getEncoded());
+        JsonNode ownerKey = call(put("/api/e2ee/identity"), ip, owner, Map.of("publicKey", ownerPublic));
+        JsonNode peerKey = call(put("/api/e2ee/identity"), ip, peer, Map.of("publicKey", peerPublic));
+        assertEquals(ownerKey, call(put("/api/e2ee/identity"), ip, owner, Map.of("publicKey", ownerPublic)));
+        mvc.perform(body(put("/api/e2ee/identity"), ip, owner, Map.of("publicKey", peerPublic))).andExpect(status().isConflict());
+        mvc.perform(body(put("/api/e2ee/identity"), ip, admin, Map.of("publicKey", peerPublic))).andExpect(status().isForbidden());
+        String roomId = call(post("/api/rooms"), ip, owner, Map.of("name", "加密房间")).path("id").asText();
+        String ownerSession = call(post("/api/rooms/{id}/members", roomId), ip, owner, Map.of()).path("token").asText();
+        String peerSession = call(post("/api/rooms/{id}/members", roomId), ip, peer, Map.of()).path("token").asText();
+        String stealthSession = call(post("/api/rooms/{id}/members", roomId), ip, admin, Map.of("stealth", true)).path("token").asText();
+        String normalAdminSession = call(post("/api/rooms/{id}/members", roomId), ip, admin, Map.of()).path("token").asText();
+        String roomPath = "/api/e2ee/rooms/" + roomId;
+        String opaqueWrap = java.util.Base64.getEncoder().encodeToString(new byte[384]);
+        Map<String, String> ownerWrap = Map.of("fingerprint", ownerKey.path("fingerprint").asText(), "wrappedKey", opaqueWrap);
+        Map<String, String> peerWrap = Map.of("fingerprint", peerKey.path("fingerprint").asText(), "wrappedKey", opaqueWrap);
+        Map<String, Object> ciphertext = Map.of("enc", 1, "iv", "AAAAAAAAAAAAAAAA", "content",
+                java.util.Base64.getEncoder().encodeToString(new byte[32]));
+        mvc.perform(body(post("/api/rooms/{id}/messages", roomId).header("X-Session-Token", peerSession), ip, peer, ciphertext))
+                .andExpect(status().isForbidden());
+        mvc.perform(body(put(roomPath + "/members/" + peerId).header("X-Session-Token", peerSession), ip, peer, peerWrap))
+                .andExpect(status().isForbidden());
+        call(put(roomPath + "/members/" + ownerId).header("X-Session-Token", ownerSession), ip, owner, ownerWrap);
+        assertEquals(1, call(get(roomPath + "/candidates").header("X-Session-Token", ownerSession), ip, owner, null).size());
+        call(put(roomPath + "/members/" + peerId).header("X-Session-Token", ownerSession), ip, owner, peerWrap);
+        assertEquals(opaqueWrap, call(get(roomPath).header("X-Session-Token", peerSession), ip, peer, null).path("wrappedKey").asText());
+        mvc.perform(body(get(roomPath).header("X-Session-Token", ownerSession), ip, peer, null)).andExpect(status().isForbidden());
+        mvc.perform(body(get(roomPath).header("X-Session-Token", stealthSession), ip, admin, null)).andExpect(status().isForbidden());
+        mvc.perform(body(get(roomPath).header("X-Session-Token", normalAdminSession), ip, admin, null)).andExpect(status().isForbidden());
+        mvc.perform(body(post("/api/rooms/{id}/messages", roomId).header("X-Session-Token", normalAdminSession), ip, admin, ciphertext))
+                .andExpect(status().isForbidden());
+        String adminId = call(get("/api/auth/me"), ip, admin, null).path("id").asText();
+        mvc.perform(body(put(roomPath + "/members/" + adminId).header("X-Session-Token", ownerSession), ip, owner, peerWrap))
+                .andExpect(status().isForbidden());
+        // 禁止覆盖已有信封，也拒绝将32字节原始AES密钥当作信封写入。
+        mvc.perform(body(put(roomPath + "/members/" + peerId).header("X-Session-Token", ownerSession), ip, owner,
+                Map.of("fingerprint", peerKey.path("fingerprint").asText(), "wrappedKey",
+                        java.util.Base64.getEncoder().encodeToString(new byte[32])))).andExpect(status().isBadRequest());
+        byte[] differentWrap = new byte[384];
+        differentWrap[0] = 1;
+        mvc.perform(body(put(roomPath + "/members/" + peerId).header("X-Session-Token", ownerSession), ip, owner,
+                Map.of("fingerprint", peerKey.path("fingerprint").asText(), "wrappedKey",
+                        java.util.Base64.getEncoder().encodeToString(differentWrap)))).andExpect(status().isConflict());
+        JsonNode sent = call(post("/api/rooms/{id}/messages", roomId).header("X-Session-Token", peerSession), ip, peer, ciphertext);
+        assertEquals(1, sent.path("enc").asInt());
+        assertEquals(ciphertext.get("content"), jdbc.queryForObject("SELECT content FROM chat_message WHERE id=?", String.class, sent.path("id").asLong()));
+        JsonNode adminHistory = call(get("/api/rooms/{id}/messages", roomId).header("X-Session-Token", stealthSession), ip, admin, null);
+        // 数据库存储时间精度与内存不同；这里只比较完整加密载荷和身份字段。
+        var expectedPayload = (com.fasterxml.jackson.databind.node.ObjectNode) sent.deepCopy();
+        var adminPayload = (com.fasterxml.jackson.databind.node.ObjectNode) adminHistory.path("records").get(0).deepCopy();
+        expectedPayload.remove("createdAt");
+        adminPayload.remove("createdAt");
+        assertEquals(expectedPayload, adminPayload);
+        mvc.perform(body(post("/api/rooms/{id}/messages", roomId).header("X-Session-Token", peerSession), ip, peer, ciphertext))
+                .andExpect(status().isConflict());
+        mvc.perform(body(post("/api/rooms/{id}/messages", roomId).header("X-Session-Token", peerSession), ip, peer,
+                Map.of("content", "明文", "enc", 0, "iv", "AAAAAAAAAAAAAAAA"))).andExpect(status().isBadRequest());
+        mvc.perform(body(post("/api/rooms/{id}/messages", roomId).header("X-Session-Token", peerSession), ip, peer,
+                Map.of("content", ciphertext.get("content"), "enc", 1, "iv", "invalid"))).andExpect(status().isBadRequest());
+        // 管理员重置登录密码后，原公开身份仍然不能替换。
+        call(post("/api/admin/users/{id}/reset-password", peerId), ip, admin, Map.of("password", "Temporary@123"));
+        String resetLogin = call(post("/api/auth/login"), ip, null, Map.of("username", "keypeer", "password", "Temporary@123")).path("token").asText();
+        mvc.perform(body(put("/api/e2ee/identity"), ip, resetLogin, Map.of("publicKey", ownerPublic))).andExpect(status().isConflict());
     }
 
     /** 构造统一的正常注册请求。 */

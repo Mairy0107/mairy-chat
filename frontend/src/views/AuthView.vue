@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { request } from '../api/chat'
 import { machineFingerprint, saveLogin } from '../auth'
+import { unlockIdentity } from '../crypto/e2ee'
 
 const route = useRoute()
 const router = useRouter()
@@ -60,6 +61,10 @@ async function submit() {
       const result = await request('/auth/login', { method: 'POST', publicRequest: true,
         body: { username: username.value.trim(), password: password.value } })
       saveLogin(result)
+      // 本地加密失败不阻断登录，房间页可用原密码或加密备份重新解锁。
+      if (result.user.role === 'USER') {
+        try { await unlockIdentity(password.value) } catch { /* 房间页显示设备解锁入口。 */ }
+      }
       password.value = ''
       await router.replace(result.user.role === 'ADMIN' ? '/admin' : '/app')
     } else if (mode.value === 'register') {

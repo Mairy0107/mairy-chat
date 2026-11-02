@@ -20,7 +20,7 @@ public final class ChatViews {
 
     /** 历史与实时消息共用的结构。 */
     public record MessageView(String id, String roomId, String memberId, String nickname,
-                              String content, LocalDateTime createdAt) {
+                              String content, Integer enc, String iv, LocalDateTime createdAt) {
     }
 
     /** 房间按页码查询。 */

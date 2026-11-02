@@ -106,10 +106,36 @@ CREATE TABLE IF NOT EXISTS chat_message (
     room_id BIGINT NOT NULL COMMENT '所属房间',
     member_id BIGINT NOT NULL COMMENT '发送会话',
     nickname VARCHAR(20) NOT NULL COMMENT '发送时昵称快照',
-    content VARCHAR(1000) NOT NULL COMMENT '纯文本消息',
+    content VARCHAR(5400) NOT NULL COMMENT '旧明文或Base64 AES-GCM密文',
+    enc TINYINT NOT NULL DEFAULT 0 COMMENT '0旧明文，1端到端密文',
+    iv VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NULL COMMENT 'Base64随机96位IV',
     created_at DATETIME NOT NULL COMMENT '发送时间',
     PRIMARY KEY (id),
     KEY idx_message_room_id (room_id, id),
+    UNIQUE KEY uk_message_room_iv (room_id, iv),
     CONSTRAINT fk_message_room FOREIGN KEY (room_id) REFERENCES chat_room (id),
     CONSTRAINT fk_message_member FOREIGN KEY (member_id) REFERENCES chat_member (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='房间消息';
+
+
+-- 私钥只在用户设备，此处只有公开密钥及其 SHA-256 指纹。
+CREATE TABLE IF NOT EXISTS chat_user_pubkey (
+    user_id BIGINT NOT NULL PRIMARY KEY,
+    public_key VARCHAR(1024) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    fingerprint CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    created_at DATETIME NOT NULL,
+    CONSTRAINT fk_pubkey_user FOREIGN KEY (user_id) REFERENCES chat_user(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='不可变设备公钥，无私钥托管';
+
+-- 房主客户端只为普通成员生成 RSA-OAEP 信封，没有管理员或服务器信封。
+CREATE TABLE IF NOT EXISTS chat_room_key_wrap (
+    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    room_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    fingerprint CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    wrapped_key VARCHAR(512) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    created_at DATETIME NOT NULL,
+    UNIQUE KEY uk_wrap_room_user (room_id, user_id),
+    CONSTRAINT fk_wrap_room FOREIGN KEY (room_id) REFERENCES chat_room(id),
+    CONSTRAINT fk_wrap_user FOREIGN KEY (user_id) REFERENCES chat_user(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='成员专属密钥信封，无管理员托管';
