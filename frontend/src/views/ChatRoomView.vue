@@ -6,6 +6,8 @@ const props = defineProps({ chat: { type: Object, required: true } })
 defineEmits(['leave'])
 const messages = ref([])
 const draft = ref('')
+const composerInput = ref(null)
+const emojis = ['😀', '😊', '😂', '❤️', '👍', '🎉', '🌹', '☕']
 const error = ref('')
 const status = ref('连接中')
 const sending = ref(false)
@@ -90,6 +92,7 @@ function connect() {
   connection.onopen = () => {
     if (disposed || socket !== connection) return
     status.value = '实时连接已就绪'
+    // 首次及重连均在连接建立后同步，避免重复请求与历史缺口。
     refreshHistory()
   }
   connection.onmessage = (event) => {
@@ -116,7 +119,7 @@ function connect() {
 /** 保存消息后合并回包；断线时仍可通过 REST 发送。 */
 async function handleSend() {
   const content = draft.value.trim()
-  if (!content || sending.value || sessionExpired.value) return
+  if (!content || sending.value || sessionExpired.value || props.chat.stealth) return
   sending.value = true
   error.value = ''
   try {
@@ -132,13 +135,33 @@ async function handleSend() {
   }
 }
 
+/** 中文输入法确认不发送；Enter发送，Shift+Enter换行。 */
+function handleEnter(event) {
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+    event.preventDefault()
+    handleSend()
+  }
+}
+
+/** 在光标位置插入表情，保持输入焦点且不超过消息上限。 */
+async function insertEmoji(emoji) {
+  const input = composerInput.value
+  const start = input?.selectionStart ?? draft.value.length
+  const end = input?.selectionEnd ?? start
+  const text = draft.value.slice(0, start) + emoji + draft.value.slice(end)
+  if (text.length > 1000) return
+  draft.value = text
+  await nextTick()
+  input?.focus()
+  input?.setSelectionRange(start + emoji.length, start + emoji.length)
+}
+
 /** 显示服务端返回的消息时间。 */
 function formatTime(value) {
   return value.replace('T', ' ').slice(0, 19)
 }
 
 onMounted(() => {
-  refreshHistory()
   connect()
 })
 
@@ -154,7 +177,7 @@ onBeforeUnmount(() => {
     <div class="section-heading">
       <div>
         <h2>{{ chat.room.name }}</h2>
-        <p class="muted">{{ chat.member.nickname }} · <span role="status">{{ status }}</span></p>
+        <p class="muted">{{ chat.member.nickname }} {{ chat.stealth ? "· 隐身只读" : "" }} · <span role="status">{{ status }}</span></p>
       </div>
       <button class="secondary" @click="$emit('leave')">返回大厅</button>
     </div>
@@ -176,12 +199,16 @@ onBeforeUnmount(() => {
         <p class="message-bubble">{{ message.content }}</p>
       </article>
     </div>
-    <form class="composer" @submit.prevent="handleSend">
+    <p v-if="chat.stealth" class="notice">隐身只读：不会向房间公开成员或进房事件。</p>
+    <form v-else class="composer" @submit.prevent="handleSend">
       <label for="message-content">说点什么</label>
-      <textarea id="message-content" v-model="draft" maxlength="1000" rows="3"
+      <textarea ref="composerInput" id="message-content" @keydown="handleEnter" v-model="draft" maxlength="1000" rows="3"
         :disabled="sessionExpired" placeholder="分享此刻的想法…" required></textarea>
+      <div class="emoji-picker" aria-label="表情选择器">
+        <button v-for="emoji in emojis" :key="emoji" type="button" class="secondary" :disabled="sessionExpired" :aria-label="`插入表情 ${emoji}`" @click="insertEmoji(emoji)">{{ emoji }}</button>
+      </div>
       <div class="composer-footer">
-        <span class="muted">{{ draft.length }} / 1000 · 点击发送</span>
+        <span class="muted">{{ draft.length }} / 1000 · Enter发送 · Shift+Enter换行</span>
         <button :disabled="sending || sessionExpired || !draft.trim()">{{ sending ? '发送中…' : '发送消息' }}</button>
       </div>
     </form>

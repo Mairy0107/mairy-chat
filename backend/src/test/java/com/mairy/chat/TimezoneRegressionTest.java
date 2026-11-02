@@ -25,6 +25,10 @@ import com.mairy.chat.entity.Member;
 import com.mairy.chat.entity.Message;
 import com.mairy.chat.entity.Room;
 import com.mairy.chat.service.MemberService;
+import com.mairy.chat.service.AuthService;
+import com.mairy.chat.security.AuthIdentity;
+import com.mairy.chat.entity.User;
+import com.mairy.chat.entity.LoginSession;
 import com.mairy.chat.service.MessageService;
 import com.mairy.chat.service.RoomService;
 import com.mairy.chat.websocket.ChatSocketHandler;
@@ -75,7 +79,7 @@ class TimezoneRegressionTest {
     /** 验证房间写入和返回时间均使用上海时间。 */
     @Test
     void roomCreationUsesShanghaiTime() {
-        RoomService service = spy(new RoomService());
+        RoomService service = spy(new RoomService(auth()));
         doAnswer(invocation -> {
             Room room = invocation.getArgument(0);
             room.setId(1L);
@@ -86,19 +90,20 @@ class TimezoneRegressionTest {
         assertShanghaiTime(service.createRoom("测试房间").createdAt());
     }
 
-    /** 验证进房写入上海时间，并按同一基准签发 24 小时会话。 */
+    /** 验证进房写入上海时间，过期时间沿用已验证的八小时登录态。 */
     @Test
     void memberCreationUsesShanghaiTime() {
-        MemberService service = spy(new MemberService(mock(RoomService.class)));
+        AuthService auth = auth();
+        MemberService service = spy(new MemberService(mock(RoomService.class), auth));
         doAnswer(invocation -> {
             Member member = invocation.getArgument(0);
             member.setId(2L);
             assertShanghaiTime(member.getJoinedAt());
-            assertEquals(member.getJoinedAt().plusHours(24), member.getExpiresAt());
+            assertEquals(auth.current().session().getExpiresAt(), member.getExpiresAt());
             return true;
         }).when(service).save(any(Member.class));
 
-        assertShanghaiTime(service.joinRoom(1L, "测试员").expiresAt().minusHours(24));
+        assertShanghaiTime(service.joinRoom(1L, false).expiresAt().minusHours(8));
     }
 
     /** 验证消息写入和发送接口结果均使用上海时间。 */
@@ -118,7 +123,7 @@ class TimezoneRegressionTest {
     /** 验证 UTC 环境不会将已过期的上海时间会话多放行八小时。 */
     @Test
     void restSessionExpiryUsesShanghaiTime() {
-        MemberService service = spy(new MemberService(mock(RoomService.class)));
+        MemberService service = spy(new MemberService(mock(RoomService.class), auth()));
         LambdaQueryChainWrapper<Member> query = mock(LambdaQueryChainWrapper.class, RETURNS_SELF);
         doReturn(query).when(query).eq(any(), any());
         doReturn(query).when(service).lambdaQuery();
@@ -135,7 +140,7 @@ class TimezoneRegressionTest {
     /** 验证实时推送使用相同的上海时间过期规则。 */
     @Test
     void webSocketSessionExpiryUsesShanghaiTime() throws Exception {
-        ChatSocketHandler handler = new ChatSocketHandler(new ObjectMapper().findAndRegisterModules());
+        ChatSocketHandler handler = new ChatSocketHandler(new ObjectMapper().findAndRegisterModules(), auth());
         Member member = member();
         member.setExpiresAt(startedAt.minusMinutes(1));
         WebSocketSession session = socket(member);
@@ -189,7 +194,7 @@ class TimezoneRegressionTest {
                     assertEquals(sent.createdAt(), LocalDateTime.parse(rest.get("createdAt").asText()));
                     assertEquals(rest, mapper.readTree(mapper.writeValueAsString(history)));
 
-                    ChatSocketHandler handler = new ChatSocketHandler(mapper);
+                    ChatSocketHandler handler = new ChatSocketHandler(mapper, auth());
                     WebSocketSession session = socket(member());
                     handler.afterConnectionEstablished(session);
                     handler.publish(1L, sent);
@@ -217,6 +222,8 @@ class TimezoneRegressionTest {
     private Member member() {
         Member member = new Member();
         member.setId(2L);
+        member.setUserId(1L);
+        member.setLoginSessionId("login-session");
         member.setRoomId(1L);
         member.setNickname("测试员");
         member.setExpiresAt(startedAt.plusHours(1));
@@ -230,6 +237,22 @@ class TimezoneRegressionTest {
         when(session.isOpen()).thenReturn(true);
         when(session.getAttributes()).thenReturn(Map.of(SessionHandshakeInterceptor.MEMBER_ATTRIBUTE, member));
         return session;
+    }
+
+    /** 构造已验证登录身份，仍在UTC环境使用上海时间。 */
+    private AuthService auth() {
+        AuthService service = mock(AuthService.class);
+        User user = new User();
+        user.setId(1L);
+        user.setNickname("测试员");
+        user.setRole("USER");
+        LoginSession login = new LoginSession();
+        login.setId("login-session");
+        login.setExpiresAt(com.mairy.chat.util.ChatTime.now().plusHours(8));
+        AuthIdentity identity = new AuthIdentity(user, login);
+        when(service.current()).thenReturn(identity);
+        when(service.requireActiveSession("login-session")).thenReturn(identity);
+        return service;
     }
 
     /** 构造带指定时间的消息推送数据。 */

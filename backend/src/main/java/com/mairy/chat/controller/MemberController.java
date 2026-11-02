@@ -22,11 +22,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class MemberController {
     private final MemberService memberService;
 
-    /** 使用昵称进房并返回匿名会话凭证。 */
+    /** 绑定登录账号进房，管理员可选择隐身。 */
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public MemberView join(@PathVariable @Positive Long roomId,
                            @Valid @RequestBody JoinRoom request) {
-        return memberService.joinRoom(roomId, request.nickname());
+        return memberService.joinRoom(roomId, request.stealth());
     }
 }

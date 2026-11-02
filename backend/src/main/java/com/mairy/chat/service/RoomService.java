@@ -8,13 +8,24 @@ import com.mairy.chat.entity.Room;
 import com.mairy.chat.mapper.RoomMapper;
 import com.mairy.chat.util.ChatTime;
 import org.springframework.http.HttpStatus;
+import org.springframework.dao.DuplicateKeyException;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 /** 房间业务复用 MyBatis-Plus 3.5.18 的 Spring 服务实现。 */
 @Service
+@RequiredArgsConstructor
 public class RoomService extends ServiceImpl<RoomMapper, Room> {
+    private final AuthService auth;
+
+    /** 查询当前用户的房间。 */
+    public RoomView mine() {
+        Room room = lambdaQuery().eq(Room::getOwnerUserId, auth.current().user().getId()).one();
+        return room == null ? null : toView(room);
+    }
+
     /** 分页读取房间，不在结果转换中查询数据库。 */
     public PageView<RoomView> listRooms(long page, long size) {
         Page<Room> result = lambdaQuery().orderByDesc(Room::getId).page(new Page<>(page, size));
@@ -27,9 +38,19 @@ public class RoomService extends ServiceImpl<RoomMapper, Room> {
     public RoomView createRoom(String name) {
         Room room = new Room();
         room.setName(name.strip());
+        room.setOwnerUserId(auth.current().user().getId());
         room.setCreatedAt(ChatTime.now());
-        save(room);
+        try {
+            save(room);
+        } catch (DuplicateKeyException exception) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "每个用户最多创建一个聊天室");
+        }
         return toView(room);
+    }
+
+    /** 返回可直接进入的房间资料。 */
+    public RoomView detail(Long id) {
+        return toView(requireRoom(id));
     }
 
     /** 校验房间存在，供进房流程复用。 */

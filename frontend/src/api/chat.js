@@ -1,10 +1,14 @@
+import { auth, clearLogin } from '../auth'
+
 /** 生产构建走 /chat 前缀，本地开发仍用 Vite 根路径代理。 */
 const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 const WS_PATH = import.meta.env.VITE_WS_PATH || '/ws/chat'
 
-/** 发起业务请求，统一携带匿名凭证并转换错误信息。 */
-async function request(path, { method = 'GET', body, token } = {}) {
+/** 发起业务请求，统一携带登录和进房凭证并转换错误信息。 */
+export async function request(path, { method = 'GET', body, token, publicRequest = false } = {}) {
   const headers = {}
+  const loginToken = publicRequest ? null : auth.token
+  if (loginToken) headers.Authorization = `Bearer ${loginToken}`
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (token) headers['X-Session-Token'] = token
 
@@ -19,9 +23,13 @@ async function request(path, { method = 'GET', body, token } = {}) {
   } catch (cause) {
     throw new Error(cause.name === 'TimeoutError' ? '请求超时，请稍后重试' : '无法连接后端，请检查本地服务')
   }
-  const data = await response.json().catch(() => ({}))
+  const data = await response.json().catch(() => null)
   if (!response.ok) {
-    const error = new Error(data.message || '请求失败，请稍后重试')
+    if (response.status === 401 && loginToken && auth.token === loginToken) {
+      clearLogin()
+      window.dispatchEvent(new Event('mairy:unauthorized'))
+    }
+    const error = new Error(data?.message || '请求失败，请稍后重试')
     error.status = response.status
     throw error
   }
@@ -38,9 +46,9 @@ export function createRoom(name) {
   return request('/rooms', { method: 'POST', body: { name } })
 }
 
-/** 用昵称换取当前房间的匿名会话。 */
-export function joinRoom(roomId, nickname) {
-  return request(`/rooms/${roomId}/members`, { method: 'POST', body: { nickname } })
+/** 以登录身份获取绑定当前房间的会话，隐身由后端校验。 */
+export function joinRoom(roomId, stealth = false) {
+  return request(`/rooms/${roomId}/members`, { method: 'POST', body: { stealth } })
 }
 
 /** 按游标加载一段历史，返回的消息按时间正序排列。 */

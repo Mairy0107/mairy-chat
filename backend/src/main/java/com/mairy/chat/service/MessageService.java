@@ -42,6 +42,10 @@ public class MessageService extends ServiceImpl<MessageMapper, Message> {
     @Transactional
     public MessageView send(Long roomId, String token, String content) {
         Member member = memberService.requireRoomSession(roomId, token);
+        if (Boolean.TRUE.equals(member.getStealth())) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.FORBIDDEN, "隐身模式仅可阅读，请以普通模式进入后发送");
+        }
         Message message = new Message();
         message.setRoomId(roomId);
         message.setMemberId(member.getId());

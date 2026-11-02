@@ -16,6 +16,6 @@ public class WebConfig implements WebMvcConfigurer {
         registry.addMapping("/api/**")
                 .allowedOrigins(allowedOrigins)
                 .allowedMethods("GET", "POST", "OPTIONS")
-                .allowedHeaders("Content-Type", "X-Session-Token");
+                .allowedHeaders("Content-Type", "Authorization", "X-Session-Token");
     }
 }

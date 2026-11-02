@@ -1,6 +1,7 @@
 package com.mairy.chat.websocket;
 
 import com.mairy.chat.service.MemberService;
+import com.mairy.chat.service.IpSecurityService;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -17,14 +18,20 @@ import org.springframework.web.util.UriComponentsBuilder;
 public class SessionHandshakeInterceptor implements HandshakeInterceptor {
     public static final String MEMBER_ATTRIBUTE = "chatMember";
     private final MemberService memberService;
+    private final IpSecurityService ipSecurity;
 
-    /** 握手时验证匿名凭证，并由服务端确定连接所属房间。 */
+    /** 握手时验证绑定有效登录态的进房凭证，并由服务端确定连接所属房间。 */
     @Override
     public boolean beforeHandshake(ServerHttpRequest request, ServerHttpResponse response,
                                    WebSocketHandler handler, Map<String, Object> attributes) {
         String token = UriComponentsBuilder.fromUri(request.getURI()).build()
                 .getQueryParams().getFirst("token");
         try {
+            if (request.getRemoteAddress() == null) {
+                response.setStatusCode(HttpStatus.FORBIDDEN);
+                return false;
+            }
+            ipSecurity.check(request.getRemoteAddress().getAddress().getHostAddress(), "/ws/chat");
             attributes.put(MEMBER_ATTRIBUTE, memberService.requireSession(token));
             return true;
         } catch (ResponseStatusException exception) {

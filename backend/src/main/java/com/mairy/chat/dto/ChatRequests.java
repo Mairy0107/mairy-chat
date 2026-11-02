@@ -15,10 +15,9 @@ public final class ChatRequests {
             @Size(max = 50, message = "房间名称最多 50 字") String name) {
     }
 
-    /** 昵称进房请求。 */
+    /** 管理员可选的隐身进房请求。 */
     public record JoinRoom(
-            @NotBlank(message = "昵称不能为空")
-            @Size(max = 20, message = "昵称最多 20 字") String nickname) {
+            boolean stealth) {
     }
 
     /** 发送纯文本消息请求。 */

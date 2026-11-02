@@ -32,7 +32,19 @@ public class RoomController {
         return roomService.listRooms(page, size);
     }
 
-    /** 创建一个可供昵称加入的房间。 */
+    /** 返回当前登录用户的自建房，未创建时返回空响应。 */
+    @GetMapping("/mine")
+    public RoomView mine() {
+        return roomService.mine();
+    }
+
+    /** 按主键读取房间资料供路由刷新使用。 */
+    @GetMapping("/{id}")
+    public RoomView detail(@org.springframework.web.bind.annotation.PathVariable @jakarta.validation.constraints.Positive Long id) {
+        return roomService.detail(id);
+    }
+
+    /** 创建当前账号唯一的房间。 */
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public RoomView create(@Valid @RequestBody CreateRoom request) {

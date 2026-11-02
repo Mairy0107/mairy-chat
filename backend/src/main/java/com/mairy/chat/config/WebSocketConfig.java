@@ -18,7 +18,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
     @Value("${chat.allowed-origins}")
     private String[] allowedOrigins;
 
-    /** 注册带匿名会话校验和来源限制的实时推送端点。 */
+    /** 注册带登录绑定会话校验和来源限制的实时推送端点。 */
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
         registry.addHandler(socketHandler, "/ws/chat")

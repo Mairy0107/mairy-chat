@@ -13,7 +13,7 @@ public final class ChatViews {
     public record RoomView(String id, String name, LocalDateTime createdAt) {
     }
 
-    /** 会话凭证仅在进房时返回，前端保存在页面内存中。 */
+    /** 进房凭证绑定登录会话，仅在进房时返回并保存在页面内存中。 */
     public record MemberView(String id, String roomId, String nickname, String token,
                              LocalDateTime expiresAt) {
     }
