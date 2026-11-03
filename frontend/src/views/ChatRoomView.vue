@@ -27,7 +27,11 @@ let historyVersion = 0
 let roomKey = null
 const keyReady = ref(false)
 const keyBusy = ref(false)
-const keyNotice = ref('设备密钥未解锁')
+// 安全环境仅控制页面入口，不改变密钥算法与持久化规则。
+const secureContext = window.isSecureContext === true
+const secureContextNotice = '请使用 HTTPS 或 localhost 解锁设备密钥。'
+const keyDialog = ref(null)
+const keyNotice = ref('请用登录密码解锁')
 const keyPassword = ref('')
 const myFingerprint = ref('')
 const verifiedRoomFingerprint = ref('')
@@ -35,7 +39,12 @@ const roomFingerprint = ref('')
 const owner = ref(false)
 const candidates = ref([])
 
-/** 刷新本设备密钥与待授权成员，缺失密钥绝不降级发送明文。 */
+/** 打开设备密钥对话框，由原生对话框管理焦点与 Esc 关闭。 */
+function openKeyDialog() {
+  keyDialog.value?.showModal()
+}
+
+/** 刷新本设备密钥与待授权成员，非安全环境仅加载可读历史。 */
 async function refreshKeys() {
   if (keyBusy.value || disposed) return
   keyBusy.value = true
@@ -47,10 +56,14 @@ async function refreshKeys() {
   owner.value = false
   try {
     if (auth.user?.role === 'ADMIN' || props.chat.stealth) {
-      keyNotice.value = '平台管理员无法解密加密消息；旧明文仍按原规则显示'
+      keyNotice.value = '当前为只读访问，无法解密消息'
       return
     }
-    if (!isUnlocked()) throw new Error('请输入本地密钥密码解锁（首次为创建密钥时的登录密码）')
+    if (!secureContext) {
+      keyNotice.value = secureContextNotice
+      return
+    }
+    if (!isUnlocked()) throw new Error('请用登录密码解锁')
     myFingerprint.value = identityFingerprint()
     const result = await loadRoomKey(props.chat.room.id, props.chat.member.token, verifiedRoomFingerprint.value)
     if (disposed) return
@@ -59,7 +72,7 @@ async function refreshKeys() {
     verifiedRoomFingerprint.value = ''
     keyReady.value = true
     owner.value = result.ownerUserId === auth.user.id
-    keyNotice.value = '端到端加密已就绪 · 服务器和平台管理员无法解密'
+    keyNotice.value = '加密已就绪'
     if (owner.value) candidates.value = await request('/e2ee/rooms/' + props.chat.room.id + '/candidates', { token: props.chat.member.token })
   } catch (cause) {
     if (!disposed) keyNotice.value = cause.message
@@ -69,8 +82,13 @@ async function refreshKeys() {
   }
 }
 
-/** 只在当前设备解锁保险箱，不把本地密钥密码发送到接口。 */
+/** 仅在安全环境本地解锁，密码不发送到接口。 */
 async function unlockKeys() {
+  if (!secureContext) {
+    keyPassword.value = ''
+    keyNotice.value = secureContextNotice
+    return
+  }
   if (keyBusy.value) return
   keyBusy.value = true
   keyReady.value = false
@@ -99,7 +117,7 @@ async function grantMember(candidate) {
     await request('/e2ee/rooms/' + props.chat.room.id + '/members/' + candidate.userId,
       { method: 'PUT', token: props.chat.member.token, body })
     candidates.value = candidates.value.filter(row => row.userId !== candidate.userId)
-    keyNotice.value = '已授权该成员；对方点击刷新密钥即可读取本房间全部历史密文'
+    keyNotice.value = '已授权，请提醒对方刷新密钥'
   } catch (cause) {
     keyNotice.value = cause.message
   } finally {
@@ -130,7 +148,15 @@ async function restoreBackup(event) {
     importVault(await file.text())
     roomKey = null
     keyReady.value = false
-    keyNotice.value = '备份已导入，请使用备份原密码解锁'
+    // 导入后同步清理页面身份，重新显示解锁入口与加密消息占位。
+    keyPassword.value = ''
+    myFingerprint.value = ''
+    roomFingerprint.value = ''
+    verifiedRoomFingerprint.value = ''
+    candidates.value = []
+    owner.value = false
+    keyNotice.value = '已导入，请用备份原密码解锁'
+    await refreshHistory()
   } catch {
     keyNotice.value = '无法导入：请检查备份账号、格式及本设备是否已有保险箱'
   } finally {
@@ -307,33 +333,72 @@ onBeforeUnmount(() => {
       <button class="secondary" @click="$emit('leave')">返回大厅</button>
     </div>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
-    <!-- 密钥操作限定在房间页面，不修改前端公共组件。 -->
-    <details class="panel" open>
-      <summary>端到端加密与设备密钥</summary>
-      <p role="status">{{ keyNotice }}</p>
+    <!-- 聊天页仅保留一个入口，密钥表单按需在对话框中展开。 -->
+    <dialog ref="keyDialog" class="key-dialog" aria-labelledby="device-key-title" @close="keyPassword = ''">
+      <div class="key-dialog-heading">
+        <div>
+          <h3 id="device-key-title">设备密钥</h3>
+          <p class="muted">端到端加密</p>
+        </div>
+        <button type="button" class="secondary" aria-label="关闭设备密钥" @click="keyDialog.close()">关闭</button>
+      </div>
+      <!-- HTTP 下只展示一条环境提示，禁用按钮旁始终可见原因。 -->
+      <p v-if="!secureContext" id="key-context-warning" class="key-warning" role="alert">{{ secureContextNotice }}</p>
+      <p v-else class="key-status" role="status">{{ keyBusy ? '正在处理…' : keyNotice }}</p>
       <template v-if="auth.user?.role === 'USER' && !chat.stealth">
-        <p class="muted">私钥仅在此设备。请保留加密备份和原密码；丢失后管理员也无法恢复。</p>
-        <form @submit.prevent="unlockKeys">
-          <label>本地密钥密码<input v-model="keyPassword" type="password" autocomplete="off" required maxlength="128" /></label>
-          <button :disabled="keyBusy">解锁设备密钥</button>
+        <form v-if="!myFingerprint" class="key-form" @submit.prevent="unlockKeys">
+          <label>登录密码<input v-model="keyPassword" type="password" autocomplete="current-password" required maxlength="128"
+            :disabled="keyBusy || !secureContext" :aria-describedby="!secureContext ? 'key-context-warning' : 'key-password-hint'" autofocus /></label>
+          <p id="key-password-hint" class="muted">密码重置后，请用原密码解锁。</p>
+          <button :disabled="keyBusy || !secureContext" :aria-describedby="!secureContext ? 'key-context-warning' : undefined">{{ keyBusy ? '解锁中…' : '解锁' }}</button>
         </form>
-        <label>首次使用：房主通过可信渠道提供的完整房间密钥指纹<input v-model="verifiedRoomFingerprint" autocomplete="off" maxlength="64" /></label>
-        <button class="secondary" :disabled="keyBusy" @click="refreshKeys">核验 / 刷新密钥 / 待授权成员</button>
-        <p v-if="roomFingerprint" style="overflow-wrap: anywhere">已核验的房间密钥指纹：{{ roomFingerprint }}。房主请通过可信渠道把此指纹提供给成员；新设备也需重新核验。</p>
-        <button class="secondary" :disabled="!myFingerprint || keyBusy" @click="downloadBackup">导出加密备份</button>
-        <label>导入原设备加密备份<input type="file" accept="application/json,.json" :disabled="keyBusy" @change="restoreBackup" /></label>
-        <p v-if="myFingerprint" style="overflow-wrap: anywhere">本设备完整指纹：{{ myFingerprint }}</p>
-        <template v-if="owner && keyReady">
-          <p class="muted">授权会共享房间全部历史与后续密文。请通过其他可信渠道索取对方完整指纹，不要直接复制此页面候选人的指纹。</p>
-          <div v-for="candidate in candidates" :key="candidate.userId">
-            <p style="overflow-wrap: anywhere">{{ candidate.nickname }}（账号 {{ candidate.userId }}）· 公钥指纹 {{ candidate.fingerprint }}</p>
-            <label>成员本人提供的完整指纹<input v-model="candidate.verifiedFingerprint" autocomplete="off" maxlength="64" /></label>
-            <button :disabled="keyBusy || !candidate.verifiedFingerprint" @click="grantMember(candidate)">核验并授权该成员</button>
+        <button v-else type="button" class="secondary key-refresh" :disabled="keyBusy || !secureContext" @click="refreshKeys">刷新密钥</button>
+        <details class="key-section">
+          <summary>密钥备份</summary>
+          <div class="key-section-content">
+            <p class="muted">备份需用原密码解锁；丢失后无法恢复。</p>
+            <button type="button" class="secondary" :disabled="!myFingerprint || keyBusy" @click="downloadBackup">导出备份</button>
+            <label>导入备份<input type="file" accept="application/json,.json" :disabled="keyBusy" @change="restoreBackup" /></label>
           </div>
-        </template>
+        </details>
+        <details v-if="myFingerprint" class="key-section" :open="!keyReady">
+          <summary>房间指纹</summary>
+          <div class="key-section-content">
+            <form v-if="!keyReady" class="key-form" @submit.prevent="refreshKeys">
+              <label>房主提供的完整指纹<input v-model="verifiedRoomFingerprint" autocomplete="off" maxlength="64" required
+                :disabled="keyBusy || !secureContext" placeholder="通过其他可信渠道向房主获取" /></label>
+              <button :disabled="keyBusy || !secureContext">核验指纹</button>
+            </form>
+            <template v-else>
+              <p class="muted">已核验。房主可通过可信渠道分享此指纹。</p>
+              <p class="key-fingerprint">{{ roomFingerprint }}</p>
+            </template>
+          </div>
+        </details>
+        <details v-if="myFingerprint" class="key-section">
+          <summary>设备指纹</summary>
+          <div class="key-section-content">
+            <p class="muted">通过可信渠道发给房主，用于成员授权。</p>
+            <p class="key-fingerprint">{{ myFingerprint }}</p>
+          </div>
+        </details>
+        <details v-if="owner && keyReady && candidates.length" class="key-section">
+          <summary>成员授权（{{ candidates.length }}）</summary>
+          <div class="key-section-content">
+            <p class="muted">授权后可读全部历史消息。请向成员本人核对指纹。</p>
+            <details v-for="candidate in candidates" :key="candidate.userId" class="key-candidate">
+              <summary>{{ candidate.nickname }}（账号 {{ candidate.userId }}）</summary>
+              <form class="key-form" @submit.prevent="grantMember(candidate)">
+                <label>成员本人提供的完整指纹<input v-model="candidate.verifiedFingerprint" autocomplete="off" maxlength="64" required :disabled="keyBusy" /></label>
+                <button :disabled="keyBusy || !candidate.verifiedFingerprint">核验并授权</button>
+              </form>
+            </details>
+          </div>
+        </details>
       </template>
-    </details>
+    </dialog>
     <div class="chat-tools">
+      <button type="button" class="secondary key-entry" :class="{ 'key-ready': keyReady }" aria-haspopup="dialog" @click="openKeyDialog">设备密钥</button>
       <button class="secondary" :disabled="refreshing || loadingHistory || sessionExpired" @click="refreshHistory">刷新消息</button>
       <button v-if="status === '实时连接已断开'" class="secondary" :disabled="sessionExpired" @click="connect">重新连接</button>
     </div>
@@ -365,3 +430,28 @@ onBeforeUnmount(() => {
     </form>
   </section>
 </template>
+
+<style scoped>
+/* 密钥界面局限于房间页，沿用现有按钮、表单和配色。 */
+.key-entry::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: #8895ab; }
+.key-entry.key-ready::before { background: #347d58; }
+.key-dialog { width: min(460px, calc(100% - 32px)); max-height: calc(100dvh - 48px); padding: 24px; border: 1px solid #e2e7ef; border-radius: 16px; color: inherit; background: #fff; box-shadow: 0 24px 70px #24365a26; overflow-y: auto; }
+.key-dialog::backdrop { background: #17283e66; }
+.key-dialog-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 18px; }
+.key-dialog-heading button { padding: 6px 12px; }
+.key-status, .key-warning { padding: 10px 12px; margin-bottom: 18px; border-radius: 8px; font-size: 14px; overflow-wrap: anywhere; }
+.key-status { background: #f3f5f9; }
+.key-warning { background: #fff5e5; color: #80541b; }
+.key-form, .key-section-content { display: grid; gap: 12px; }
+.key-form button, .key-section-content > button { justify-self: start; }
+.key-refresh { margin-bottom: 4px; }
+.key-section { margin-top: 18px; padding-top: 14px; border-top: 1px solid #e7ecf2; }
+.key-section summary { cursor: pointer; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.key-section-content, .key-candidate .key-form { margin-top: 12px; }
+.key-fingerprint { padding: 10px 12px; border-radius: 8px; background: #f5f7fb; overflow-wrap: anywhere; font-family: monospace; font-size: 13px; user-select: all; }
+/* 小屏让入口自动换行，对话框保持可滚动。 */
+.chat-tools { flex-wrap: wrap; }
+@media (max-width: 600px) {
+  .key-dialog { padding: 20px; max-height: calc(100dvh - 24px); }
+}
+</style>

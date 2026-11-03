@@ -61,8 +61,8 @@ async function submit() {
       const result = await request('/auth/login', { method: 'POST', publicRequest: true,
         body: { username: username.value.trim(), password: password.value } })
       saveLogin(result)
-      // 本地加密失败不阻断登录，房间页可用原密码或加密备份重新解锁。
-      if (result.user.role === 'USER') {
+      // 仅在安全环境自动解锁；HTTP 登录仍进入房间并显示环境提示。
+      if (result.user.role === 'USER' && window.isSecureContext === true) {
         try { await unlockIdentity(password.value) } catch { /* 房间页显示设备解锁入口。 */ }
       }
       password.value = ''
