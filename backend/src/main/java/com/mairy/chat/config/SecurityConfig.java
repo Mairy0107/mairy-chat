@@ -37,7 +37,8 @@ public class SecurityConfig {
                                 "/api/auth/login", "/api/auth/register", "/api/auth/forgot-password").permitAll()
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         .requestMatchers("/api/**").authenticated()
-                        .requestMatchers("/ws/chat").permitAll()
+                        // 私信握手由独立拦截器验证登录凭证。
+                        .requestMatchers("/ws/chat", "/ws/dm").permitAll()
                         .anyRequest().denyAll())
                 .exceptionHandling(errors -> errors
                         .authenticationEntryPoint((request, response, exception) -> {

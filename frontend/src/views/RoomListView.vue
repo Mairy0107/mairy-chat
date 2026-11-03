@@ -119,7 +119,8 @@ onMounted(async () => {
       <div v-for="user in results" :key="user.id" class="people-row"><div><strong>{{ user.nickname }}</strong><p class="muted">{{ user.publicNo }} · {{ user.username }}</p></div><button class="secondary" :disabled="friendBusy" @click="friendAction(`/friends/${user.id}`)">加好友</button></div>
       <h3 class="subheading">好友 · {{ friends.length }}</h3>
       <p v-if="!friends.length" class="muted">搜索编号，认识第一个朋友。</p>
-      <div v-for="row in friends" :key="row.id" class="people-row"><span>{{ other(row).nickname }} <small class="muted">{{ other(row).publicNo }}</small></span></div>
+      <!-- 私信入口使用对方账号，好友权限由后端逐次验证。 -->
+      <div v-for="row in friends" :key="row.id" class="people-row"><span>{{ other(row).nickname }} <small class="muted">{{ other(row).publicNo }}</small></span><RouterLink class="button-link" :to="'/dm/' + other(row).id">发私信</RouterLink></div>
       <h3 class="subheading">收到的请求 · {{ incoming.length }}</h3>
       <div v-for="row in incoming" :key="row.id" class="people-row"><span>{{ row.sender.nickname }} {{ row.sender.publicNo }}</span><div class="actions"><button :disabled="friendBusy" @click="friendAction(`/friends/requests/${row.id}?accept=true`)">同意</button><button class="secondary" :disabled="friendBusy" @click="friendAction(`/friends/requests/${row.id}?accept=false`)">拒绝</button></div></div>
       <h3 class="subheading">已发出的请求 · {{ outgoing.length }}</h3>

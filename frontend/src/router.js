@@ -5,6 +5,7 @@ import AuthView from './views/AuthView.vue'
 import RoomListView from './views/RoomListView.vue'
 import RoomEntryView from './views/RoomEntryView.vue'
 import AdminView from './views/AdminView.vue'
+import DmChatView from './views/DmChatView.vue'
 
 export const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -16,6 +17,8 @@ export const router = createRouter({
     { path: '/app', component: RoomListView },
     { path: '/admin', component: AdminView, meta: { admin: true } },
     { path: '/room/:id', component: RoomEntryView },
+    // 私信与进房流程独立，仍复用全局登录守卫。
+    { path: '/dm/:userId', component: DmChatView },
     { path: '/:pathMatch(.*)*', redirect: '/app' },
   ],
 })

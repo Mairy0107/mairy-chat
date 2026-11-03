@@ -23,6 +23,13 @@ import org.springframework.web.server.ResponseStatusException;
 public class FriendService extends ServiceImpl<FriendRequestMapper, FriendRequest> {
     private final AuthService auth;
 
+    /** 使用规范化用户对校验已接受关系，供私信等好友功能复用。 */
+    public void requireAccepted(Long me, Long peerId) {
+        if (me.equals(peerId) || baseMapper.countAccepted(Math.min(me, peerId), Math.max(me, peerId)) == 0) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "仅好友可私信");
+        }
+    }
+
     /** 按编号或用户名、昵称搜索，最多返回30条公开资料。 */
     public List<AuthViews.UserView> search(String keyword) {
         String query = keyword.strip();

@@ -19,6 +19,9 @@ import com.mairy.chat.security.SessionRevoked;
 import com.mairy.chat.util.AuthTokens;
 import com.mairy.chat.util.ChatTime;
 import java.nio.charset.StandardCharsets;
+import java.util.Collection;
+import java.util.Set;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DuplicateKeyException;
@@ -115,6 +118,15 @@ public class AuthService extends ServiceImpl<UserMapper, User> {
             throw unauthorized();
         }
         return new AuthIdentity(user, session);
+    }
+
+    /** 推送前一次批量校验登录有效期、撤销及停用状态，禁止循环查询。 */
+    public Set<String> activeSessionIds(Collection<String> ids) {
+        if (ids.isEmpty()) return Set.of();
+        return sessions.selectList(new LambdaQueryWrapper<LoginSession>()
+                        .in(LoginSession::getId, ids).gt(LoginSession::getExpiresAt, ChatTime.now())
+                        .exists("SELECT 1 FROM chat_user u WHERE u.id=chat_login_session.user_id AND u.disabled=FALSE"))
+                .stream().map(LoginSession::getId).collect(Collectors.toSet());
     }
 
     /** 获取过滤器已验证的请求身份，不接受客户端指定身份。 */

@@ -70,3 +70,33 @@ export function openChatSocket(token) {
   url.searchParams.set('token', token)
   return new WebSocket(url)
 }
+
+/** 打开与已接受好友的私信会话。 */
+export function openDm(userId) {
+  return request('/dm/with/' + encodeURIComponent(userId), { method: 'POST' })
+}
+
+/** 列出本人可访问的私信会话。 */
+export function listDmThreads() {
+  return request('/dm/threads')
+}
+
+/** 使用与房间相同的游标格式读取私信历史。 */
+export function listDmMessages(threadId, beforeId) {
+  const query = new URLSearchParams({ size: '30' })
+  if (beforeId) query.set('beforeId', beforeId)
+  return request('/dm/threads/' + threadId + '/messages?' + query)
+}
+
+/** 私信 v1 发送明文，由服务端固定 enc=0 并确定发送人。 */
+export function sendDmMessage(threadId, content) {
+  return request('/dm/threads/' + threadId + '/messages', { method: 'POST', body: { content } })
+}
+
+/** 从房间同源路径推导私信端点，兼容 /chat 前缀；使用登录凭证。 */
+export function openDmSocket() {
+  const url = new URL(import.meta.env.VITE_DM_WS_PATH || WS_PATH.replace(/\/chat\/?$/, '/dm'), window.location.href)
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  url.searchParams.set('token', auth.token)
+  return new WebSocket(url)
+}
