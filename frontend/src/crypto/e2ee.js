@@ -10,7 +10,13 @@ let generation = 0
 
 /** 二进制编码不经过日志或第三方加密服务。 */
 export function toBase64(bytes) {
-  return btoa(String.fromCharCode(...new Uint8Array(bytes)))
+  // 分块转换，避免语音密文展开参数超过浏览器调用栈上限。
+  const data = new Uint8Array(bytes)
+  let binary = ''
+  for (let offset = 0; offset < data.length; offset += 8192) {
+    binary += String.fromCharCode(...data.subarray(offset, offset + 8192))
+  }
+  return btoa(binary)
 }
 
 /** 严格读取规范 Base64，拒绝编码歧义。 */
@@ -253,19 +259,61 @@ export async function encryptMessage(key, roomId, memberId, text) {
   return { enc: 1, content: toBase64(ciphertext), iv: toBase64(iv) }
 }
 
-/** 双读旧明文和新密文；异常密文、缺失密钥均显示友好占位。 */
-export async function decryptMessage(key, roomId, message) {
+export const maxVoiceBytes = 512 * 1024
+export const maxVoiceDuration = 60000
+export const voiceMimeTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg', 'audio/mp4']
+
+/** 仅接受有限音频格式、时长与大小，防止解密后加载任意资源。 */
+function validateVoice(payload) {
+  if (payload.version !== 1 || !voiceMimeTypes.includes(payload.mime)
+      || !Number.isInteger(payload.duration) || payload.duration < 1 || payload.duration > maxVoiceDuration
+      || typeof payload.data !== 'string' || payload.data.length > 699052) throw new Error('语音格式无效')
+  const bytes = fromBase64(payload.data)
+  if (!bytes.length || bytes.length > maxVoiceBytes) throw new Error('语音大小无效')
+  return bytes
+}
+
+/** 房间语音连同格式和时长一起加密，AAD独立绑定voice类型，绝不发送明文。 */
+export async function encryptVoice(key, roomId, memberId, blob, duration) {
+  const me = currentIdentity()
+  if (!key) throw new Error('缺少房间密钥，不能发送')
+  if (!blob.size || blob.size > maxVoiceBytes) throw new Error('语音不能超过512 KiB')
+  const payload = { version: 1, mime: blob.type, duration, data: toBase64(await blob.arrayBuffer()) }
+  validateVoice(payload)
+  const plain = encoder.encode(JSON.stringify(payload))
+  if (plain.length > 700000) throw new Error('语音过大')
+  const iv = crypto.getRandomValues(new Uint8Array(12))
+  const content = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, tagLength: 128,
+    additionalData: encoder.encode('mairy:e2ee:v1:message:' + roomId + ':member:' + memberId + ':kind:voice') }, key, plain)
+  if (currentIdentity() !== me) throw new Error('设备身份已变化，请重试')
+  return { kind: 'voice', enc: 1, iv: toBase64(iv), content: toBase64(content) }
+}
+
+/** 双读旧文字和新密文；仅校验通过的语音返回本地Blob，不产生外部URL。 */
+export async function decryptMessage(key, roomId, envelope) {
+  // 展示字段只能由本地解密产生，不信任网络注入的音频Blob或URL。
+  const { voice, voiceUrl, duration, displayContent, legacy, ...message } = envelope
   if (message.roomId !== roomId) return { ...message, displayContent: '消息房间不匹配' }
-  if (message.enc === 0) return { ...message, displayContent: message.content, legacy: true }
+  const kind = message.kind ?? 'text'
+  if (!['text', 'voice'].includes(kind)) return { ...message, displayContent: '不支持的消息类型' }
+  if (message.enc === 0) return { ...message, displayContent: kind === 'text' ? message.content : '拒绝未加密语音', legacy: true }
   if (message.enc !== 1) return { ...message, displayContent: '不支持的消息加密版本' }
   if (!key || !isUnlocked()) return { ...message, displayContent: '已加密，当前设备无法解密' }
   try {
     const me = currentIdentity()
     const iv = fromBase64(message.iv)
     if (iv.length !== 12) throw new Error('IV无效')
+    if (typeof message.content !== 'string' || message.content.length > (kind === 'voice' ? 933356 : 5400)) throw new Error('密文过长')
     const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv, tagLength: 128,
-      additionalData: messageAad(roomId, message.memberId) }, key, fromBase64(message.content))
+      additionalData: kind === 'voice'
+        ? encoder.encode('mairy:e2ee:v1:message:' + roomId + ':member:' + message.memberId + ':kind:voice')
+        : messageAad(roomId, message.memberId) }, key, fromBase64(message.content))
     if (currentIdentity() !== me) throw new Error('设备身份已变化')
+    if (kind === 'voice') {
+      const payload = JSON.parse(decoder.decode(plain))
+      const bytes = validateVoice(payload)
+      return { ...message, displayContent: '加密语音', voice: new Blob([bytes], { type: payload.mime }), duration: payload.duration }
+    }
     return { ...message, displayContent: decoder.decode(plain) }
   } catch {
     return { ...message, displayContent: '已加密，密钥不匹配或消息校验失败' }

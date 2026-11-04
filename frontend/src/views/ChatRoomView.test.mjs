@@ -11,8 +11,8 @@ const compiled = compileScript(descriptor, { id: 'chat-room-test', inlineTemplat
 const fingerprint = 'a'.repeat(64)
 
 /** 使用 Vue 内存渲染器检查页面状态与事件，不启动浏览器或打包前端。 */
-async function room({ secure = true, unlocked = false, verify = false, role = 'USER', candidates = [] } = {}) {
-  const calls = { unlock: [], load: [], sent: [], grants: [], imported: [], decrypted: [] }
+async function room({ secure = true, unlocked = false, verify = false, role = 'USER', candidates = [], media = null, sendFails = false } = {}) {
+  const calls = { voice: [], revoked: [], unlock: [], load: [], sent: [], grants: [], imported: [], decrypted: [] }
   let needsVerification = verify
   const key = {}
   const socket = { readyState: 1, close() {} }
@@ -21,7 +21,7 @@ async function room({ secure = true, unlocked = false, verify = false, role = 'U
   const api = {
     listMessages: async () => ({ records: [history], hasMore: false, nextBeforeId: null }),
     openChatSocket: () => socket,
-    sendMessage: async (...args) => { calls.sent.push(args); return { ...history, id: '2', memberId: '11' } },
+    sendMessage: async (...args) => { calls.sent.push(args); if (sendFails) throw new Error('发送失败'); return { ...history, id: '2', memberId: '11', kind: args[2].kind } },
     request: async (path, options) => {
       if (path.endsWith('/candidates')) return candidates.map(row => ({ ...row }))
       calls.grants.push([path, options])
@@ -44,8 +44,12 @@ async function room({ secure = true, unlocked = false, verify = false, role = 'U
     encryptMessage: async (...args) => { assert.equal(args[0], key); return { enc: 1, content: 'ciphertext', iv: 'iv' } },
     decryptMessage: async (roomKey, roomId, message) => {
       calls.decrypted.push(roomKey)
+      if (roomKey && message.kind === 'voice') return { ...message, displayContent: '加密语音',
+        voice: new Blob(['test-audio'], { type: 'audio/webm' }), duration: 1000 }
       return { ...message, displayContent: roomKey ? '已解密内容' : '已加密，当前设备无法解密' }
     },
+    maxVoiceBytes: 512 * 1024, maxVoiceDuration: 60000, voiceMimeTypes: ['audio/webm'],
+    encryptVoice: async (...args) => { calls.voice.push(args); assert.equal(args[0], key); return { kind: 'voice', enc: 1, content: 'voice-ciphertext', iv: 'voice-iv' } },
     exportVault: () => '{}',
     importVault: text => { calls.imported.push(text); unlocked = false },
     wrapRoomKey: async (roomId, roomKey, candidate, verified) => {
@@ -54,7 +58,13 @@ async function room({ secure = true, unlocked = false, verify = false, role = 'U
       return { fingerprint: verified, wrappedKey: 'wrapped' }
     },
   }
-  const context = vm.createContext({ window: { isSecureContext: secure }, WebSocket: { OPEN: 1, CONNECTING: 0 } })
+  const events = new Map()
+  const context = vm.createContext({
+    window: { isSecureContext: secure, addEventListener: (name, fn) => events.set(name, fn), removeEventListener: name => events.delete(name) },
+    WebSocket: { OPEN: 1, CONNECTING: 0 }, Blob, setTimeout, clearTimeout,
+    URL: { createObjectURL: () => 'blob:local-' + Math.random(), revokeObjectURL: url => calls.revoked.push(url) },
+    ...(media || {}),
+  })
   const module = new vm.SourceTextModule(compiled.content, { context })
   await module.link(specifier => {
     // 双向绑定由测试直接触发更新事件，避免依赖浏览器 DOM 指令实现。
@@ -97,7 +107,7 @@ async function room({ secure = true, unlocked = false, verify = false, role = 'U
   function find(predicate, parent = root) {
     return [parent, ...parent.children.flatMap(child => find(() => true, child))].filter(predicate)
   }
-  return { root, find, calls, socket, app }
+  return { root, find, calls, socket, app, events }
 }
 
 /** 等待页面挂载、密钥刷新和历史刷新依次完成。 */
@@ -207,4 +217,105 @@ test('member grants retain fingerprint verification and admin stays read only', 
   t.after(() => admin.app.unmount())
   assert.equal(admin.find(el => el.props.type === 'password').length, 0)
   assert.deepEqual(admin.calls.load, [])
+})
+
+/** 模拟录制事件和媒体设备，检查页面真实按钮、草稿及清理行为。 */
+function voiceMedia({ permission, empty = false, oversized = false } = {}) {
+  const tracks = { stopped: 0, stop() { this.stopped++ } }
+  const stream = { getTracks: () => [tracks] }
+  let active
+  class Recorder {
+    static isTypeSupported(type) { return type === 'audio/webm' }
+    constructor(stream, options) { this.mimeType = options.mimeType; this.state = 'inactive'; active = this }
+    start() { this.state = 'recording' }
+    stop() {
+      this.state = 'inactive'
+      queueMicrotask(() => {
+        this.ondataavailable?.({ data: new Blob([new Uint8Array(empty ? 0 : oversized ? 512 * 1024 + 1 : 32)], { type: this.mimeType }) })
+        this.onstop?.()
+      })
+    }
+  }
+  return { tracks, stream, get active() { return active }, globals: { MediaRecorder: Recorder,
+    navigator: { mediaDevices: { getUserMedia: () => permission ? permission() : Promise.resolve(stream) } } } }
+}
+
+/** 录完不自动上传，成功发送只含密文，离开时释放预览。 */
+test('room records, previews and sends only encrypted voice', async t => {
+  const media = voiceMedia()
+  const view = await room({ unlocked: true, media: media.globals })
+  t.after(() => view.app.unmount())
+  const button = label => view.find(el => el.tag === 'button' && text(el) === label)[0]
+  await button('录语音').props.onClick()
+  assert.equal(media.active.state, 'recording')
+  button('结束录音').props.onClick()
+  await settle()
+  assert.equal(media.tracks.stopped > 0, true)
+  assert.equal(view.calls.sent.length, 0)
+  assert.equal(view.find(el => el.tag === 'audio').length, 1)
+  await button('发送语音').props.onClick()
+  await settle()
+  assert.equal(view.calls.voice.length, 1)
+  assert.equal(view.calls.sent.length, 1)
+  assert.deepEqual(JSON.parse(JSON.stringify(view.calls.sent[0][2])), { kind: 'voice', enc: 1, content: 'voice-ciphertext', iv: 'voice-iv' })
+  const playback = view.find(el => el.tag === 'audio')[0]
+  assert.equal(playback.props['aria-label'], '成员的语音')
+  assert.equal(playback.props.preload, 'none')
+  await button('刷新消息').props.onClick()
+  await settle()
+  assert.equal(view.find(el => el.tag === 'audio').length, 0)
+  assert.equal(view.calls.revoked.length, 2)
+})
+
+/** 取消授权等待后不启录；拒绝权限、空录音和超限音频不发送。 */
+test('room voice handles permission, cancel, empty and oversize without uploads', async t => {
+  let allow
+  const media = voiceMedia({ permission: () => new Promise(resolve => { allow = resolve }) })
+  const view = await room({ unlocked: true, media: media.globals })
+  t.after(() => view.app.unmount())
+  const start = view.find(el => el.tag === 'button' && text(el) === '录语音')[0].props.onClick()
+  await settle()
+  view.find(el => el.tag === 'button' && text(el) === '取消语音')[0].props.onClick()
+  allow(media.stream)
+  await start
+  assert.equal(media.active, undefined)
+  assert.equal(media.tracks.stopped, 1)
+  assert.equal(view.calls.sent.length, 0)
+  for (const options of [{ empty: true }, { oversized: true },
+    { permission: () => Promise.reject(Object.assign(new Error(), { name: 'NotAllowedError' })) }]) {
+    const otherMedia = voiceMedia(options)
+    const other = await room({ unlocked: true, media: otherMedia.globals })
+    t.after(() => other.app.unmount())
+    await other.find(el => el.tag === 'button' && text(el) === '录语音')[0].props.onClick()
+    other.find(el => el.tag === 'button' && text(el) === '结束录音')[0]?.props.onClick()
+    await settle()
+    assert.equal(other.find(el => el.tag === 'audio').length, 0)
+    assert.equal(other.calls.sent.length, 0)
+    assert.ok(other.find(el => el.props.role === 'alert').length)
+  }
+})
+
+/** 发送失败保留草稿；锁定清除预览，卸载也结束正在录制的设备。 */
+test('room voice retains failed draft and clears audio on lock and unmount', async t => {
+  const media = voiceMedia()
+  const view = await room({ unlocked: true, media: media.globals, sendFails: true })
+  t.after(() => view.app.unmount())
+  await view.find(el => el.tag === 'button' && text(el) === '录语音')[0].props.onClick()
+  view.find(el => el.tag === 'button' && text(el) === '结束录音')[0].props.onClick()
+  await settle()
+  await view.find(el => el.tag === 'button' && text(el) === '发送语音')[0].props.onClick()
+  await settle()
+  assert.equal(view.find(el => el.tag === 'audio').length, 1)
+  view.events.get('mairy:lock-keys')()
+  await settle()
+  assert.equal(view.find(el => el.tag === 'audio').length, 0)
+  assert.equal(view.calls.revoked.length, 1)
+  assert.equal(view.find(el => el.tag === 'button' && text(el) === '录语音')[0].props.disabled, true)
+  const otherMedia = voiceMedia()
+  const other = await room({ unlocked: true, media: otherMedia.globals })
+  await other.find(el => el.tag === 'button' && text(el) === '录语音')[0].props.onClick()
+  other.app.unmount()
+  await settle()
+  assert.ok(otherMedia.tracks.stopped)
+  assert.equal(other.calls.sent.length, 0)
 })

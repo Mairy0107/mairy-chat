@@ -5,6 +5,8 @@
 
   location /chat/api/ {
     proxy_pass http://chat-api:8080/api/;
+    # 逐步转发助手 SSE，避免代理缓存积攒增量。
+    proxy_buffering off;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;

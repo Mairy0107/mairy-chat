@@ -20,11 +20,12 @@ public final class ChatRequests {
             boolean stealth) {
     }
 
-    /** 新消息必须携带 AES-GCM 密文及随机 IV，不再接受明文写入。 */
+    /** 房间文字和语音共用密文信封；省略kind时兼容文字客户端。 */
     public record SendMessage(
             @NotBlank(message = "消息不能为空")
-            @Size(max = 5400, message = "加密消息过长") String content,
+            @Size(max = 933356, message = "加密消息过长") String content,
             @jakarta.validation.constraints.NotNull Integer enc,
-            @NotBlank @Size(max = 16) String iv) {
+            @NotBlank @Size(max = 16) String iv,
+            @Size(max = 8) String kind) {
     }
 }

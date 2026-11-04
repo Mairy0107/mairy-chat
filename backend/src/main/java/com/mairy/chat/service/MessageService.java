@@ -43,7 +43,7 @@ public class MessageService extends ServiceImpl<MessageMapper, Message> {
         return new MessagePage(rows.stream().map(this::toView).toList(), nextBeforeId, hasMore);
     }
 
-    /** 校验普通加密成员及密文元数据，以上海时间保存后由控制器推送。 */
+    /** 按文字或语音校验密文长度与成员权限，保存后由控制器推送。 */
     @Transactional
     public MessageView send(Long roomId, String token, SendMessage request) {
         Member member = memberService.requireRoomSession(roomId, token);
@@ -58,8 +58,14 @@ public class MessageService extends ServiceImpl<MessageMapper, Message> {
         }
         e2ee.requireSender(roomId, member);
         E2eeService.decode(request.iv(), 12);
+        String kind = request.kind() == null ? "text" : request.kind();
+        if (!"text".equals(kind) && !"voice".equals(kind)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "消息类型无效");
+        }
+        // 文字沿用原限制；语音允许700000字节载荷和16字节GCM标签。
+        int maxLength = "voice".equals(kind) ? 700016 : 4016;
         int length = E2eeService.decode(request.content(), -1).length;
-        if (length < 17 || length > 4016) {
+        if (length < 17 || length > maxLength) {
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST, "加密消息长度无效");
         }
@@ -68,6 +74,7 @@ public class MessageService extends ServiceImpl<MessageMapper, Message> {
         message.setMemberId(member.getId());
         message.setNickname(member.getNickname());
         message.setContent(request.content());
+        message.setKind(kind);
         message.setEnc(1);
         message.setIv(request.iv());
         message.setCreatedAt(ChatTime.now());
@@ -84,6 +91,7 @@ public class MessageService extends ServiceImpl<MessageMapper, Message> {
     private MessageView toView(Message message) {
         return new MessageView(message.getId().toString(), message.getRoomId().toString(),
                 message.getMemberId().toString(), message.getNickname(), message.getContent(),
-                message.getEnc() == null ? 0 : message.getEnc(), message.getIv(), message.getCreatedAt());
+                message.getEnc() == null ? 0 : message.getEnc(), message.getIv(), message.getCreatedAt(),
+                message.getKind() == null ? "text" : message.getKind());
     }
 }

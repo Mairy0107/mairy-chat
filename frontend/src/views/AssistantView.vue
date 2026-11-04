@@ -21,6 +21,7 @@ const live = ref(null)
 const waitingLong = ref(false)
 let controller
 let waitingTimer
+let cancelTypewriter
 let generation = 0
 let disposed = false
 let follow = true
@@ -29,7 +30,13 @@ const helper = computed(() => !status.value ? '正在读取助手状态' : !stat
   : status.value.quotaRemaining <= 0 ? '今日次数已用完，明天再来' : 'Enter 发送 · Shift+Enter 换行')
 
 /** 页面卸载或退出后中止请求，旧回包不得再修改当前页面。 */
-onBeforeUnmount(() => { disposed = true; ++generation; controller?.abort(); clearTimeout(waitingTimer) })
+onBeforeUnmount(() => { disposed = true; ++generation; controller?.abort(); clearTimeout(waitingTimer); clearTypewriter() })
+
+/** 清除逐字展示队列和定时器，并结束等待，防止旧内容继续写入。 */
+function clearTypewriter() {
+  cancelTypewriter?.()
+  cancelTypewriter = undefined
+}
 
 /** 仅在用户接近底部时跟随流，阅读历史时保留位置。 */
 function trackScroll() {
@@ -121,9 +128,11 @@ async function loadOlder() {
   finally { if (!disposed && version === generation) loadingOlder.value = false }
 }
 
-/** 中止浏览器读取；服务端发现断连后关闭上游并保存中断提示。 */
+/** 中止浏览器读取并清理逐字展示；服务端发现断连后收尾。 */
 function stop() {
   controller?.abort()
+  clearTypewriter()
+  live.value = null
   notice.value = '已停止。服务端收尾可能稍有延迟，可刷新对话确认。'
 }
 
@@ -134,7 +143,7 @@ function onKeydown(event) {
   send()
 }
 
-/** 只在服务器接受后追加用户消息，失败时保留未发送草稿。 */
+/** 服务器接受后追加用户消息，回复固定逐字展示，失败时保留未发送草稿。 */
 async function send() {
   const content = draft.value.trim()
   if (sending.value || loading.value || loadingOlder.value) return
@@ -153,30 +162,78 @@ async function send() {
   let accepted = false
   follow = true
   live.value = { role: 'assistant', content: '' }
+  let targetContent = ''
+  let savedMessage
+  let typingTimer
+  let resolveTyping
+  const typingFinished = new Promise(resolve => { resolveTyping = resolve })
+  cancelTypewriter = () => {
+    clearTimeout(typingTimer)
+    typingTimer = undefined
+    targetContent = ''
+    resolveTyping()
+  }
+
+  /** 每次只展示一个 Unicode 码点，固定间隔，不因积压或完成事件加速。 */
+  function scheduleTyping() {
+    if (typingTimer !== undefined || !live.value) return
+    if (live.value.content.length >= targetContent.length) {
+      if (savedMessage) {
+        messages.value.push(savedMessage)
+        live.value = null
+        resolveTyping()
+      }
+      return
+    }
+    typingTimer = setTimeout(() => {
+      typingTimer = undefined
+      if (!active() || controller.signal.aborted) { clearTypewriter(); return }
+      live.value.content += String.fromCodePoint(targetContent.codePointAt(live.value.content.length))
+      scrollEnd()
+      scheduleTyping()
+    }, 30)
+  }
+
+  /** 安全替换立即清除旧队列，最终确认保留已显示的相同前缀。 */
+  function replaceTyping(content, reset = false) {
+    targetContent = content
+    if (reset || !content.startsWith(live.value.content)) {
+      clearTimeout(typingTimer)
+      typingTimer = undefined
+      live.value.content = ''
+    }
+    scheduleTyping()
+  }
+
   try {
     if (!thread.value) {
       const row = await createAiThread()
-      if (!active()) return
+      if (!active() || controller.signal.aborted) return
       thread.value = row
       threads.value = [row, ...threads.value]
     }
     await streamAiMessage(thread.value.id, content, controller.signal, (type, data) => {
-      if (!active()) return
+      if (!active() || controller.signal.aborted) return
       if (type === 'user') {
         accepted = true
         messages.value.push(data)
         if (draft.value.trim() === content) draft.value = ''
         status.value.quotaRemaining = Math.max(0, status.value.quotaRemaining - 1)
         if (!thread.value.title) thread.value.title = content.slice(0, 20)
-      } else if (type === 'delta') live.value.content += data.content
-      else if (type === 'replace') live.value.content = data.content
+      } else if (type === 'delta') {
+        targetContent += data.content
+        scheduleTyping()
+      } else if (type === 'replace') replaceTyping(data.content, true)
       else if (type === 'done') {
-        messages.value.push(data.message)
+        savedMessage = data.message
         status.value.quotaRemaining = data.quotaRemaining
-        live.value = null
+        clearTimeout(waitingTimer)
+        replaceTyping(data.message.content)
       }
       scrollEnd()
     })
+    // 网络结束后仍等待队列逐字播完，期间保留停止入口。
+    await typingFinished
   } catch (cause) {
     if (!active()) return
     if (!controller.signal.aborted) error.value = cause.message
@@ -185,6 +242,7 @@ async function send() {
     if (accepted && !controller.signal.aborted) notice.value = '可刷新对话确认已保存的消息。'
   } finally {
     clearTimeout(waitingTimer)
+    clearTypewriter()
     if (active()) {
       sending.value = false
       live.value = null
@@ -217,7 +275,8 @@ onMounted(load)
         <div><span class="room-label">Mairy Chat · 文字助手</span><h2 id="assistant-title">{{ thread?.title || '有什么想聊的？' }}</h2></div>
         <button class="secondary" :disabled="loading || sending || loadingOlder" @click="load">刷新</button>
       </header>
-      <p class="privacy-note">对话以明文保存在服务器，并发送至 DeepSeek。请勿输入密码、密钥或隐私。</p>
+      <!-- 隐私提示使用统一的云端模型称谓，保留明文及外发说明。 -->
+      <p class="privacy-note">对话以明文保存在服务器，并发送至云端模型。请勿输入密码、密钥或隐私。</p>
       <p v-if="error" id="assistant-error" class="error" role="alert">{{ error }} <button v-if="!status" class="secondary" :disabled="loading" @click="load">重试</button></p>
       <p v-if="notice" class="notice" role="status">{{ notice }}</p>
       <div ref="messageList" class="assistant-messages" :aria-busy="loading" @scroll="trackScroll">

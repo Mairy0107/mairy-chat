@@ -2,7 +2,7 @@
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { listMessages, openChatSocket, sendMessage, request } from '../api/chat'
 import { auth } from '../auth'
-import { decryptMessage, encryptMessage, exportVault, importVault, identityFingerprint,
+import { decryptMessage, encryptMessage, encryptVoice, maxVoiceBytes, maxVoiceDuration, voiceMimeTypes, exportVault, importVault, identityFingerprint,
   isUnlocked, loadRoomKey, unlockIdentity, wrapRoomKey } from '../crypto/e2ee'
 
 const props = defineProps({ chat: { type: Object, required: true } })
@@ -39,6 +39,164 @@ const roomFingerprint = ref('')
 const owner = ref(false)
 const candidates = ref([])
 
+const voicePhase = ref('idle')
+const voicePreview = ref('')
+const voiceDuration = ref(0)
+const voiceSupported = secureContext && typeof MediaRecorder !== 'undefined'
+  && typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia
+let voiceBlob = null
+let recorder = null
+let microphone = null
+let voiceTimer = null
+let voiceVersion = 0
+
+/** 释放麦克风和定时器，结束后不再占用录音设备。 */
+function releaseMicrophone() {
+  clearTimeout(voiceTimer)
+  voiceTimer = null
+  microphone?.getTracks().forEach(track => track.stop())
+  microphone = null
+}
+
+/** 取消录制或草稿，版本号使迟到的授权和录音回调失效。 */
+function cancelVoice() {
+  voiceVersion++
+  if (recorder && recorder.state !== 'inactive') recorder.stop()
+  recorder = null
+  releaseMicrophone()
+  if (voicePreview.value) URL.revokeObjectURL(voicePreview.value)
+  voicePreview.value = ''
+  voiceBlob = null
+  voiceDuration.value = 0
+  voicePhase.value = 'idle'
+}
+
+/** 清理已解密语音URL，供刷新历史、锁定和离开房间复用。 */
+function clearVoiceMessages() {
+  for (const message of messages.value) {
+    if (message.voiceUrl) URL.revokeObjectURL(message.voiceUrl)
+  }
+}
+
+/** 锁定时清除明文音频、草稿和密钥，停止尚在等待的解密结果。 */
+function lockRoom() {
+  cancelVoice()
+  clearVoiceMessages()
+  historyVersion++
+  refreshing.value = false
+  roomKey = null
+  keyReady.value = false
+  messages.value = messages.value.map(({ voice, voiceUrl, duration, ...message }) => ({ ...message,
+    displayContent: message.enc === 1 ? '已加密，当前设备无法解密' : message.displayContent }))
+}
+
+/** 仅显式点击后请求麦克风；录完留在本地预览，不自动发送。 */
+async function startVoice() {
+  if (!voiceSupported || voicePhase.value !== 'idle' || sending.value || keyBusy.value
+      || !keyReady.value || !isUnlocked() || sessionExpired.value || props.chat.stealth || auth.user?.role !== 'USER') return
+  const version = ++voiceVersion
+  voicePhase.value = 'requesting'
+  error.value = ''
+  try {
+    const mimeType = voiceMimeTypes.find(type => MediaRecorder.isTypeSupported(type))
+    if (!mimeType) throw new Error('当前浏览器不支持录音格式')
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    if (disposed || version !== voiceVersion || !keyReady.value || !isUnlocked()) {
+      stream.getTracks().forEach(track => track.stop())
+      return
+    }
+    microphone = stream
+    const current = new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 32000 })
+    recorder = current
+    let chunks = []
+    let size = 0
+    const startedAt = Date.now()
+    let duration = 0
+    current.ondataavailable = event => {
+      if (disposed || version !== voiceVersion || !event.data.size) return
+      size += event.data.size
+      if (size > maxVoiceBytes) {
+        cancelVoice()
+        error.value = '语音超过512 KiB，请缩短录制'
+        return
+      }
+      chunks.push(event.data)
+    }
+    current.onerror = () => {
+      if (version !== voiceVersion) return
+      cancelVoice()
+      error.value = '录音失败，请重试'
+    }
+    current.onstop = () => {
+      if (disposed || version !== voiceVersion) return
+      duration = duration || Math.min(maxVoiceDuration, Math.max(1, Date.now() - startedAt))
+      releaseMicrophone()
+      recorder = null
+      if (!isUnlocked() || !keyReady.value) { cancelVoice(); return }
+      const blob = new Blob(chunks, { type: current.mimeType })
+      chunks = []
+      if (!blob.size || blob.size > maxVoiceBytes || !voiceMimeTypes.includes(blob.type)) {
+        cancelVoice()
+        error.value = '录音为空或格式无效，请重试'
+        return
+      }
+      voiceBlob = blob
+      voiceDuration.value = duration
+      voicePreview.value = URL.createObjectURL(blob)
+      voicePhase.value = 'ready'
+    }
+    // 在stop调用时冻结录制时长，避免异步回调延迟计入语音时长。
+    current.stopRecording = () => {
+      if (current.state !== 'recording') return
+      duration = Math.min(maxVoiceDuration, Math.max(1, Date.now() - startedAt))
+      voicePhase.value = 'processing'
+      current.stop()
+      releaseMicrophone()
+    }
+    current.start(250)
+    voicePhase.value = 'recording'
+    voiceTimer = setTimeout(stopVoice, maxVoiceDuration)
+  } catch (cause) {
+    if (disposed || version !== voiceVersion) return
+    cancelVoice()
+    error.value = cause.name === 'NotAllowedError' ? '请允许使用麦克风' : '无法录音，请检查麦克风与浏览器支持'
+  }
+}
+
+/** 停止录音并等待最后一块音频，麦克风立即释放。 */
+function stopVoice() {
+  recorder?.stopRecording()
+}
+
+/** 复用房间发送接口，只提交语音密文；失败保留本地草稿供重试。 */
+async function sendVoice() {
+  if (voicePhase.value !== 'ready' || !voiceBlob || sending.value || keyBusy.value
+      || !keyReady.value || !isUnlocked() || sessionExpired.value || props.chat.stealth) return
+  const version = voiceVersion
+  const key = roomKey
+  sending.value = true
+  error.value = ''
+  try {
+    const envelope = await encryptVoice(key, props.chat.room.id, props.chat.member.id, voiceBlob, voiceDuration.value)
+    if (disposed || version !== voiceVersion || key !== roomKey || !isUnlocked()) return
+    const message = await sendMessage(props.chat.room.id, props.chat.member.token, envelope)
+    if (disposed || version !== voiceVersion) return
+    await mergeMessages([message], true)
+    if (version === voiceVersion) cancelVoice()
+  } catch (cause) {
+    if (!disposed && version === voiceVersion) showError(cause)
+  } finally {
+    sending.value = false
+  }
+}
+
+/** 其他标签页清理或替换登录凭证时同步清除解密音频。 */
+function handleStorage(event) {
+  if (event.key === 'mairy.auth.token' || event.key === null) lockRoom()
+}
+window.addEventListener?.('mairy:lock-keys', lockRoom)
+window.addEventListener?.('storage', handleStorage)
+
 /** 打开设备密钥对话框，由原生对话框管理焦点与 Esc 关闭。 */
 function openKeyDialog() {
   keyDialog.value?.showModal()
@@ -48,8 +206,7 @@ function openKeyDialog() {
 async function refreshKeys() {
   if (keyBusy.value || disposed) return
   keyBusy.value = true
-  keyReady.value = false
-  roomKey = null
+  lockRoom()
   candidates.value = []
   myFingerprint.value = ''
   roomFingerprint.value = ''
@@ -91,8 +248,7 @@ async function unlockKeys() {
   }
   if (keyBusy.value) return
   keyBusy.value = true
-  keyReady.value = false
-  roomKey = null
+  lockRoom()
   myFingerprint.value = ''
   candidates.value = []
   try {
@@ -146,8 +302,7 @@ async function restoreBackup(event) {
     if (!file) return
     if (file.size > 20000) throw new Error('备份文件过大')
     importVault(await file.text())
-    roomKey = null
-    keyReady.value = false
+    lockRoom()
     // 导入后同步清理页面身份，重新显示解锁入口与加密消息占位。
     keyPassword.value = ''
     myFingerprint.value = ''
@@ -164,12 +319,17 @@ async function restoreBackup(event) {
   }
 }
 
-/** 按消息主键去重并排序，合并 REST 回包与 WebSocket 推送。 */
+/** 合并REST与推送，只有当前密钥校验通过的语音才创建本地播放URL。 */
 async function mergeMessages(records, scroll = false, version = historyVersion) {
   const decoded = await Promise.all(records.map(message => decryptMessage(roomKey, props.chat.room.id, message)))
   if (disposed || version !== historyVersion) return
   const byId = new Map(messages.value.map((message) => [message.id, message]))
-  for (const message of decoded) byId.set(message.id, message)
+  for (const message of decoded) {
+    const old = byId.get(message.id)
+    if (old?.voiceUrl) URL.revokeObjectURL(old.voiceUrl)
+    if (message.voice) message.voiceUrl = URL.createObjectURL(message.voice)
+    byId.set(message.id, message)
+  }
   messages.value = [...byId.values()].sort((a, b) => BigInt(a.id) < BigInt(b.id) ? -1 : 1)
   if (scroll) nextTick(() => messageList.value?.scrollTo({ top: messageList.value.scrollHeight }))
 }
@@ -179,15 +339,17 @@ function showError(cause) {
   error.value = cause.message
   if (cause.status === 401) {
     sessionExpired.value = true
+    lockRoom()
     status.value = '会话已过期，请返回大厅'
     socket?.close()
   }
 }
 
-/** 首次进入或重连后刷新最近一页，避免断线消息缺口。 */
+/** 刷新最近历史前释放语音URL，避免残留解密音频和断线缺口。 */
 async function refreshHistory() {
   const version = ++historyVersion
   refreshing.value = true
+  clearVoiceMessages()
   messages.value = []
   hasMore.value = false
   nextBeforeId.value = null
@@ -263,10 +425,10 @@ function connect() {
   }
 }
 
-/** 保存消息后合并回包；断线时仍可通过 REST 发送。 */
+/** 保存文字后合并回包；录音期间禁发文字，避免重复操作。 */
 async function handleSend() {
   const content = draft.value.trim()
-  if (!content || sending.value || keyBusy.value || sessionExpired.value || props.chat.stealth || !keyReady.value) return
+  if (!content || voicePhase.value !== 'idle' || sending.value || keyBusy.value || sessionExpired.value || props.chat.stealth || !keyReady.value) return
   sending.value = true
   error.value = ''
   try {
@@ -317,6 +479,10 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   // 返回大厅后关闭连接，忽略尚未完成的请求回包。
   disposed = true
+  cancelVoice()
+  clearVoiceMessages()
+  window.removeEventListener?.('mairy:lock-keys', lockRoom)
+  window.removeEventListener?.('storage', handleStorage)
   roomKey = null
   keyPassword.value = ''
   socket?.close()
@@ -416,7 +582,12 @@ onBeforeUnmount(() => {
         :class="{ own: message.memberId === chat.member.id }">
         <div class="message-meta"><span>{{ message.legacy ? "旧明文" : "加密消息" }}</span><strong>{{ message.nickname }}</strong><time>{{ formatTime(message.createdAt) }}</time></div>
         <!-- 使用文本插值展示用户输入，避免将消息当作 HTML。 -->
-        <p class="message-bubble">{{ message.displayContent }}</p>
+        <div v-if="message.voiceUrl" class="message-bubble voice-message">
+          <span>语音 · {{ Math.ceil(message.duration / 1000) }}秒</span>
+          <audio :src="message.voiceUrl" controls preload="none" :aria-label="message.nickname + '的语音'"
+            @error="error = '当前浏览器无法播放此语音'"></audio>
+        </div>
+        <p v-else class="message-bubble">{{ message.displayContent }}</p>
       </article>
     </div>
     <p v-if="chat.stealth" class="notice">隐身只读：不会向房间公开成员或进房事件。</p>
@@ -427,15 +598,33 @@ onBeforeUnmount(() => {
       <div class="emoji-picker" aria-label="表情选择器">
         <button v-for="emoji in emojis" :key="emoji" type="button" class="secondary" :disabled="sessionExpired" :aria-label="`插入表情 ${emoji}`" @click="insertEmoji(emoji)">{{ emoji }}</button>
       </div>
+      <!-- 语音只保存在本地，点击发送时才使用房间密钥加密。 -->
+      <div class="voice-tools">
+        <button v-if="voicePhase === 'idle'" type="button" class="secondary"
+          :disabled="!voiceSupported || !keyReady || keyBusy || sending || sessionExpired" @click="startVoice">录语音</button>
+        <button v-if="voicePhase === 'recording'" type="button" @click="stopVoice">结束录音</button>
+        <span class="muted" role="status">{{ voicePhase === 'requesting' ? '请允许使用麦克风' : voicePhase === 'recording' ? '录音中，最多60秒' : voicePhase === 'processing' ? '正在处理录音…' : !voiceSupported ? '录音需HTTPS及浏览器支持' : '最多60秒 · 512 KiB' }}</span>
+        <button v-if="voicePhase !== 'idle'" type="button" class="secondary" :disabled="sending" @click="cancelVoice">取消语音</button>
+      </div>
+      <div v-if="voicePreview" class="voice-tools">
+        <audio :src="voicePreview" controls preload="metadata" aria-label="待发送语音预览" @error="error = '当前浏览器无法播放此语音'"></audio>
+        <span class="muted">{{ Math.ceil(voiceDuration / 1000) }}秒 · 仅本地预览</span>
+        <button type="button" :disabled="sending || sessionExpired || !keyReady || keyBusy" @click="sendVoice">{{ sending ? '发送中…' : '发送语音' }}</button>
+      </div>
       <div class="composer-footer">
         <span class="muted">{{ draft.length }} / 1000 · Enter发送 · Shift+Enter换行</span>
-        <button :disabled="sending || sessionExpired || !keyReady || keyBusy || !draft.trim()">{{ sending ? '发送中…' : '发送' }}</button>
+        <button :disabled="voicePhase !== 'idle' || sending || sessionExpired || !keyReady || keyBusy || !draft.trim()">{{ sending ? '发送中…' : '发送' }}</button>
       </div>
     </form>
   </section>
 </template>
 
 <style scoped>
+/* 语音控件复用页面令牌与原生播放器，小屏自动换行。 */
+.voice-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.voice-tools button { min-height: 44px; }
+.voice-tools audio, .voice-message audio { width: min(280px, 100%); max-width: 100%; }
+.voice-message { display: grid; gap: 8px; min-width: 0; }
 /* 密钥弹窗复用纸面令牌，安全提示与指纹核验保持可见。 */
 .key-entry::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: var(--muted); }
 .key-entry.key-ready::before { background: var(--action); }

@@ -18,9 +18,9 @@ public final class ChatViews {
                              LocalDateTime expiresAt) {
     }
 
-    /** 历史与实时消息共用的结构。 */
+    /** 历史与实时消息共用类型字段，语音正文仍为不透明密文。 */
     public record MessageView(String id, String roomId, String memberId, String nickname,
-                              String content, Integer enc, String iv, LocalDateTime createdAt) {
+                              String content, Integer enc, String iv, LocalDateTime createdAt, String kind) {
     }
 
     /** 房间按页码查询。 */

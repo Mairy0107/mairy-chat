@@ -2,7 +2,6 @@ package com.mairy.chat.service.ai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mairy.chat.config.AiProperties;
-import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
@@ -31,7 +30,7 @@ public class DeepSeekClient {
         client = RestClient.builder().requestFactory(factory).build();
     }
 
-    /** 按 SSE data 帧读取增量，必须收到 DONE 才认为回复完整。 */
+    /** 分块读取 SSE 并即时转发完整 data 帧，必须收到 DONE 才认为回复完整。 */
     public void stream(List<Map<String, String>> messages, DeltaConsumer consumer) throws IOException {
         String base = properties.getBaseUrl().replaceAll("/+$", "");
         long deadline = System.nanoTime() + Duration.ofSeconds(120).toNanos();
@@ -42,36 +41,49 @@ public class DeepSeekClient {
                         "temperature", 0.3, "max_tokens", 2048))
                 .exchange((request, response) -> {
                     if (!response.getStatusCode().is2xxSuccessful()) throw new IOException("上游请求失败");
-                    try (var reader = new BufferedReader(new InputStreamReader(response.getBody(), StandardCharsets.UTF_8))) {
-                        StringBuilder data = new StringBuilder();
-                        String line;
-                        while ((line = readLine(reader, deadline)) != null) {
-                            if (System.nanoTime() > deadline) throw new IOException("上游回复超时");
-                            if (line.isEmpty()) {
-                                if (consume(data.toString(), consumer)) return null;
-                                data.setLength(0);
-                            } else if (line.startsWith("data:")) {
-                                data.append(line.substring(5).stripLeading());
-                                if (data.length() > 65536) throw new IOException("上游分片过大");
-                            }
-                        }
-                        if (!consume(data.toString(), consumer)) throw new IOException("上游回复中断");
+                    try (var reader = new InputStreamReader(response.getBody(), StandardCharsets.UTF_8)) {
+                        readStream(reader, deadline, consumer);
                     }
                     return null;
                 });
     }
 
-    /** 限制单行大小，异常上游不能无限占用内存。 */
-    private String readLine(BufferedReader reader, long deadline) throws IOException {
+    /** 批量解码 UTF-8，跨块保留半行；完整帧立即交付，不等待缓冲区填满。 */
+    private void readStream(InputStreamReader reader, long deadline, DeltaConsumer consumer) throws IOException {
+        char[] chunk = new char[4096];
         StringBuilder line = new StringBuilder();
-        int value;
-        while ((value = reader.read()) != -1) {
+        StringBuilder data = new StringBuilder();
+        int count;
+        while ((count = reader.read(chunk)) != -1) {
             if (System.nanoTime() > deadline) throw new IOException("上游回复超时");
-            if (value == '\n') break;
-            if (value != '\r') line.append((char) value);
-            if (line.length() > 65536) throw new IOException("上游分片过大");
+            for (int index = 0; index < count; index++) {
+                char value = chunk[index];
+                if (value == '\n') {
+                    if (consumeLine(line.toString(), data, consumer)) return;
+                    line.setLength(0);
+                } else if (value != '\r') {
+                    line.append(value);
+                    // 在拼接时限制单行大小，异常上游不能无限占用内存。
+                    if (line.length() > 65536) throw new IOException("上游分片过大");
+                }
+            }
         }
-        return value == -1 && line.isEmpty() ? null : line.toString();
+        if (!line.isEmpty() && consumeLine(line.toString(), data, consumer)) return;
+        if (!consume(data.toString(), consumer)) throw new IOException("上游回复中断");
+    }
+
+    /** 沿用空行分帧和 data 大小限制，兼容 CRLF、注释及末尾无换行。 */
+    private boolean consumeLine(String line, StringBuilder data, DeltaConsumer consumer) throws IOException {
+        if (line.isEmpty()) {
+            boolean done = consume(data.toString(), consumer);
+            data.setLength(0);
+            return done;
+        }
+        if (line.startsWith("data:")) {
+            data.append(line.substring(5).stripLeading());
+            if (data.length() > 65536) throw new IOException("上游分片过大");
+        }
+        return false;
     }
 
     /** 只转发普通文本，不暴露 reasoning、工具调用或原始协议内容。 */

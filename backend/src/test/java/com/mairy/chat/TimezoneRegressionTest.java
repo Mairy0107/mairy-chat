@@ -257,15 +257,15 @@ class TimezoneRegressionTest {
         return service;
     }
 
-    /** 使用测试密文验证封装字段和上海时间保持一致。 */
+    /** 使用文字测试密文验证类型、封装字段和上海时间保持一致。 */
     private com.mairy.chat.dto.ChatRequests.SendMessage encryptedRequest() {
         return new com.mairy.chat.dto.ChatRequests.SendMessage(
                 java.util.Base64.getEncoder().encodeToString(new byte[20]), 1,
-                java.util.Base64.getEncoder().encodeToString(new byte[12]));
+                java.util.Base64.getEncoder().encodeToString(new byte[12]), "text");
     }
 
-    /** 构造带指定时间的消息推送数据。 */
+    /** 构造带文字类型及指定时间的消息推送数据。 */
     private MessageView messageView(LocalDateTime createdAt) {
-        return new MessageView("3", "1", "2", "测试员", "你好", 0, null, createdAt);
+        return new MessageView("3", "1", "2", "测试员", "你好", 0, null, createdAt, "text");
     }
 }

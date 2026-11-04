@@ -6,7 +6,7 @@
 2. 服务端环境设置 `DEEPSEEK_API_KEY`，可选 `DEEPSEEK_BASE_URL=https://api.deepseek.com`、`DEEPSEEK_MODEL=deepseek-chat`。仅服务端使用，不放入 VITE_，不要提交真实配置。缺少密钥返回「助手未配置」，大厅入口仍显示。
 3. 按既有方式启动后端 `mvn spring-boot:run`，前端 `npm.cmd run dev`。登录后点击大厅「助手」，或打开 `http://localhost:5173/assistant`；生产路径 `/chat/assistant`。
 
-助手对话在服务端和 MySQL **明文保存**，当前会话上下文发送至 DeepSeek。它不属于房间 E2EE，也无法读取房间、私信或用户档案。界面提示不要发送密码、密钥和隐私。P0 只做文字助手，P1 问卷 / 人格覆盖仅以 `profileCompleted:false` 状态占位。
+助手对话在服务端和 MySQL **明文保存**，当前会话上下文发送至云端模型。它不属于房间 E2EE，也无法读取房间、私信或用户档案。界面提示不要发送密码、密钥和隐私。P0 只做文字助手，P1 问卷 / 人格覆盖仅以 `profileCompleted:false` 状态占位。
 
 ## 配额与过滤
 
@@ -14,6 +14,7 @@
 - `sensitive-words.txt` 与 `chat.ai.sensitive-words` 合并，每行一个字面词，忽略空行 / 井号注释及英文大小写。输入先检查；输出累计检查并保留词长尾部，命中立即停止、替换为统一拒绝，只保存拒绝正文。审计日志仅有事件类型。
 - 同会话3分钟租约防止并发生成，最多8条并行模型流；数据库事务不跨越网络等待。上下文最近20条、总计24000字符，输入2000字符，输出16000字符 / 2048 tokens。
 - SSE 使用 `user / delta / replace / done / error`；收到 done 才确认保存成功。停止按钮中止 fetch，服务端下一次写入发现断连后收尾，可能短暂显示「正在回复」。刷新可确认实际记录；进程中止可能仅保留用户消息。
+- 上游使用 4096 字符缓冲分块解码 UTF-8，完整 SSE 帧立即交付，保留单行及累计 data 的 65536 字符限制；下游每事件 flush。nginx `/chat/api/` 显式设置 `proxy_buffering off`；前端将 delta 加入打字机队列，约每 30ms 展示一个 Unicode 码点；done 后仍等待队列展示完毕，replace 清除旧队列。实现记录见 [VOICE_STREAM_NOTES.md](VOICE_STREAM_NOTES.md)。
 
 ## P0 验收
 

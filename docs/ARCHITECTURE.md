@@ -127,16 +127,16 @@ localStorage 存储 Bearer 有 XSS 风险；WS 查询参数可能进入代理日
 | POST `/api/rooms` | `{name}` 创建唯一自建房，名称必填、最多 50 字符 |
 | POST `/api/rooms/{roomId}/members` | `{stealth:false}` 进房，返回成员 `id`、roomId、nickname、token、expiresAt；昵称取登录账号 |
 | GET `/api/rooms/{roomId}/messages?beforeId=&size=30` | Bearer + 进房 Token；主键游标历史，size 为 1～50 |
-| POST `/api/rooms/{roomId}/messages` | Bearer + 进房 Token；只接收 `{content,enc:1,iv}` 加密消息 |
+| POST `/api/rooms/{roomId}/messages` | Bearer + 进房 Token；只接收 `{content,enc:1,iv,kind?}` 加密消息；kind 为 text / voice，省略为 text |
 | WS `/ws/chat?token=进房Token` | 来源白名单、直连 IP 限流、有效进房与登录校验；按房间推送 `type=message` |
 
 消息流程：客户端加密 → POST → 服务事务保存 → 控制器调用 WS 推送 → 前端合并回包与推送。WS 不接受发信，向 WS 发送文本会被关闭。推送失败不撤销已入库记录，可通过历史补读。
 
 历史以 `id < beforeId` 倒序多取一条判断 `hasMore`，返回当前页正序 `records`、`nextBeforeId`、`hasMore`。前端按字符串主键去重，用 BigInt 排序；首次连接与手动重连成功后重新读取最近一页，更早记录继续用游标加载。没有自动重连或全量离线补偿队列。
 
-客户端房间正文限制 1～1000 字符；服务端验证 Base64、`enc=1`、12 字节 IV 和 17～4016 字节密文，不接触明文。`chat_message` 的 `(room_id,iv)` 唯一约束拒绝同房间重复 IV，冲突返回 409，需要重新加密发送。历史 `enc=0` 仍可读取。
+客户端房间文字限制 1～1000 字符，语音限制 60 秒 / 512 KiB；服务端验证规范 Base64、`enc=1`、12 字节 IV，以及文字 17～4016 / 语音 17～700016 字节密文，不接触明文。`chat_message` 的 `(room_id,iv)` 唯一约束拒绝同房间重复 IV，冲突返回 409，需要重新加密发送。历史 `enc=0` 仍可读取。
 
-两种 WS 均在连接登记时复核登录，使用慢连接发送限制；退出 / 重置事件关闭匹配连接，调度每 30 秒检查过期连接。房间连接按房间索引、推送循环只检查内存会话和到期时间；私信推送另有批量有效登录检查，见下一节。
+两种 WS 均在连接登记时复核登录，使用慢连接发送限制；退出 / 重置事件关闭匹配连接，调度每 30 秒检查过期连接。房间连接按房间索引、推送循环只检查内存会话和到期时间；慢连接缓冲上限 1 MiB、发送时限 5 秒，可容纳单条语音密文；私信推送另有批量有效登录检查，见下一节。
 
 接口错误统一为 JSON `{"message":"中文说明"}`，公开主键通常以字符串返回，避免 JavaScript 精度丢失。
 
@@ -172,7 +172,7 @@ localStorage 存储 Bearer 有 XSS 风险；WS 查询参数可能进入代理日
 | 解锁身份 | 私钥作为不可导出的 CryptoKey 留在内存；首次安全环境登录尝试用登录密码创建 / 解锁，刷新后需重新解锁，退出 / 切换账号会锁定 |
 | 房间内容密钥 | 普通账号房主在客户端生成 AES-256-GCM 密钥；明文密钥仅留房间页面内存，服务端不接收 |
 | 成员密钥信封 | 房主用成员 RSA 公钥封装房间密钥，OAEP label 绑定协议 / 房间 / 收件账号 / 公钥指纹；`chat_room_key_wrap` 按房间和账号唯一，禁止覆盖 |
-| 消息密文 | 每条随机 96 位 IV、128 位 GCM 标签，AAD 绑定协议 / 房间 / 发送 memberId；Base64 存储与传输，后端 / WS 不解密 |
+| 消息密文 | 每条随机 96 位 IV、128 位 GCM 标签，AAD 绑定协议 / 房间 / 发送 memberId，语音另绑定 kind:voice；Base64 存储与传输，后端 / WS 不解密 |
 | 房间信任指纹 | 通过可信渠道核验完整 SHA-256 指纹后存于 `mairy.e2ee.v1.room-pin.<账号ID>.<房间ID>`，不从服务器返回值自动建立信任 |
 
 | 方法与后端路径 | 凭证与用途 |
@@ -189,6 +189,14 @@ localStorage 存储 Bearer 有 XSS 风险；WS 查询参数可能进入代理日
 备份由用户在本地导出加密保险箱，服务器不接收私钥、保险箱或派生密钥。新设备需登录同一账号、导入原备份并用原本地密码解锁，还要通过离线记录或可信渠道重新核验房间指纹；导入不覆盖已有保险箱。**重置登录密码不会解密旧保险箱，也不能替换已登记公钥。没有原设备 / 备份或忘记原本地密码时，管理员无法恢复历史密文。**
 
 当前没有前向保密、双棘轮、自动密钥轮换、移除成员后的密钥撤销、独立多设备身份或发送者签名。授权共享整个房间密钥，因此可读全部房间历史和后续密文。旧明文不追溯加密；服务器仍可见元数据。安全保证依赖可信客户端与正确指纹核验，不能抵御被篡改的前端脚本、XSS 或失陷设备，未经过独立密码学审计。
+
+### 房间语音
+
+仅 `ChatRoomView` 使用 `getUserMedia` / `MediaRecorder` 录音，支持浏览器可录制的 WebM / Ogg Opus 或 MP4，目标码率 32 kbps。录完先本地预览，点击「发送语音」才加密上传；录制到 60 秒自动停止，超过 512 KiB 则丢弃并提示，失败保留草稿可重试。需要 HTTPS / localhost、麦克风权限及已解锁并核验的房间密钥，无明文回退。
+
+`e2ee.js` 将 `{version:1,mime,duration,data}`（data 为音频 Base64，duration 为毫秒）作为 UTF-8 JSON，用既有房间 AES-GCM 密钥与新随机 IV 加密。语音 AAD 为 `mairy:e2ee:v1:message:<roomId>:member:<memberId>:kind:voice`；文字沿用原 AAD，因此无法将语音密文改标为文字播放。外部字段只有 `kind=voice`、enc / iv / content，音频格式、时长及字节均在密文内；服务端仍可见消息类型、长度与原有元数据。
+
+解密校验通过且音频格式、时长和大小合法后，页面才创建本地 Blob URL 供原生播放器按需播放；不加载网络注入的播放 URL。刷新历史、替换消息、锁定密钥、跨标签页登录变化、会话失效或离开时撤销相应 URL；取消和离开同时停止麦克风及迟到回调。DM 仍为明文文字，助手仍为云端文字；两者均无语音入口。详见 [VOICE_STREAM_NOTES.md](../VOICE_STREAM_NOTES.md)。
 
 ## 9. 管理后台与隐身巡查
 
@@ -213,13 +221,14 @@ API 与 WS 握手按直连 IP 合计每分钟 240 次；登录每 15 分钟 20 �
 
 | 文件 | 用途与执行条件 |
 | --- | --- |
-| [schema.sql](../backend/src/main/resources/schema.sql) | 新建库完整结构，含账号、房间、E2EE 和 DM；CREATE TABLE IF NOT EXISTS 不会升级旧表 |
+| [schema.sql](../backend/src/main/resources/schema.sql) | 新建库完整结构，含账号、房间文字 / 语音、E2EE、DM 和助手；CREATE TABLE IF NOT EXISTS 不会升级旧表 |
 | [schema-upgrade-auth.sql](../backend/src/main/resources/schema-upgrade-auth.sql) | 从匿名版升级到账号版；新增账号相关表、房主与登录绑定字段，旧匿名会话置过期；含 ALTER，只执行一次 |
 | [schema-upgrade-e2ee.sql](../backend/src/main/resources/schema-upgrade-e2ee.sql) | 已有账号库增加消息 enc / iv、扩大 content、新增公钥 / 信封表；旧行保持 `enc=0`、iv 为 NULL；含 ALTER，只执行一次 |
 | [schema-upgrade-dm.sql](../backend/src/main/resources/schema-upgrade-dm.sql) | 已有账号库新增私信会话 / 消息表；仅 CREATE TABLE IF NOT EXISTS，可重复执行，不改房间消息 |
+| [schema-upgrade-voice.sql](../backend/src/main/resources/schema-upgrade-voice.sql) | 已有房间 E2EE 库扩大 chat_message.content 为 MEDIUMTEXT，新增 kind 默认 text；含 ALTER，仅执行一次，不改 DM / 助手表 |
 | [data-local.sql](../backend/src/main/resources/data-local.sql) | 仅本地管理员种子；不存在用户名 / 编号时才插入，不覆盖已改密码，不占浏览器注册配额 |
 
-选择路径：全新库执行 `schema.sql → data-local.sql`；旧匿名库按 `schema-upgrade-auth.sql → schema-upgrade-e2ee.sql → schema-upgrade-dm.sql` 补齐，再按需导入本地种子；已经具备部分功能的账号库只执行尚未应用的对应脚本。执行前备份并确认结构，不要在新库重复执行 ALTER，也不要把全量 schema 当作旧库升级。
+选择路径：全新库执行 `schema.sql → data-local.sql`；旧匿名库按 `schema-upgrade-auth.sql → schema-upgrade-e2ee.sql → schema-upgrade-dm.sql → schema-upgrade-voice.sql` 补齐，再按需导入本地种子；已经具备部分功能的账号库只执行尚未应用的对应脚本。执行前备份并确认结构，不要在新库重复执行 ALTER，也不要把全量 schema 当作旧库升级。
 
 | 表组 | 表及关键约束 |
 | --- | --- |
@@ -261,7 +270,7 @@ API 与 WS 握手按直连 IP 合计每分钟 240 次；登录每 15 分钟 20 �
 
 后端 `AiController → service/ai/AiService → AiThreadMapper / AiMessageMapper / AiUsageMapper` 负责归属、历史与短事务；`AiStreamService` 管理 SSE 和过滤，`DeepSeekClient` 使用现有 Spring MVC 的 RestClient 调用 OpenAI 兼容的 `/chat/completions`，不依赖 Spring AI / WebFlux。所有 `/api/ai/**` 复用现有 Bearer 鉴权，只有归属账号可读写；管理员也没有读取他人助手会话的接口。房间 / DM WebSocket 不参与助手流程。
 
-**助手对话为服务端明文，数据库及服务端可以读取，并会向配置的 DeepSeek 服务发送当前会话上下文；房间 E2EE 不覆盖助手。** 系统提示要求友善简洁中文、不确定说「不知道」、不编造用户经历、拒绝密码和秘密；助手没有房间、私信、档案或外部工具访问能力。
+**助手对话为服务端明文，数据库及服务端可以读取，并会向配置的云端模型发送当前会话上下文；房间 E2EE 不覆盖助手。** 系统提示要求友善简洁中文、不确定说「不知道」、不编造用户经历、拒绝密码和秘密；助手没有房间、私信、档案或外部工具访问能力。
 
 | 方法与路径 | 当前行为 |
 | --- | --- |
@@ -289,7 +298,7 @@ SSE 事件依次为 `user`（已保存的用户消息）、`delta`（安全增�
 
 用户消息、次数与租约在同一短事务中保存；最终 assistant 消息和释放租约共用另一个事务，模型等待不占用数据库事务。通过校验的请求计一次，模型失败 / 停止仍计次，不自动重试；未配置、越权、输入拦截、忙碌和超额均不调用模型。模型上下文限最近20条、合计24000字符，输出限16000字符 / 请求 max_tokens=2048，温度0.3。同步 MVC 最多8条并行流，连接等待10秒、单次读取等待45秒、总读取预算120秒；客户端180秒超时。停止读取会在服务端下一次传输发现断连后关闭上游，进程异常时租约到期恢复；可能留下只有用户消息的未完成一轮。
 
-响应设置 `X-Accel-Buffering: no`、`Cache-Control: no-cache, no-transform`，用于既有 nginx API 代理的逐步转发。部署方需保留该响应头行为及足够的 SSE 超时。P0 仅文字，不包含问卷、人格覆盖、语音、附件、删除记录、token计费、语义审核或工具调用。验收和边界见 [FEATURE_AI_NOTES.md](../FEATURE_AI_NOTES.md)。
+上游使用 4096 字符缓冲分块解码 UTF-8，跨块保留半行，完整 SSE 帧立即交付；单行及累计 data 仍限制 65536 字符，保留超时和 DONE 完整性校验。后端高效读取 SSE 并逐事件 flush；前端将 delta 排入打字机队列，约每 30ms 展示一个 Unicode 码点（含完整 emoji 码点）。done 保留已显示前缀并继续逐字展示余下内容，replace 清除旧队列后重新逐字展示。响应设置 `X-Accel-Buffering: no`、`Cache-Control: no-cache, no-transform`，nginx `/chat/api/` 显式设置 `proxy_buffering off`，用于逐步转发。部署方需保留该响应头行为及足够的 SSE 超时。P0 仅文字，不包含问卷、人格覆盖、语音、附件、删除记录、token计费、语义审核或工具调用。验收和边界见 [FEATURE_AI_NOTES.md](../FEATURE_AI_NOTES.md) 及 [VOICE_STREAM_NOTES.md](../VOICE_STREAM_NOTES.md)。
 
 ## 13. 相关文档与维护检查
 
@@ -300,6 +309,7 @@ SSE 事件依次为 `user`（已保存的用户消息）、`delta`（安全增�
 | [SECURITY_E2EE_NOTES.md](../SECURITY_E2EE_NOTES.md) | 加密协议、指纹双向核验、设备备份恢复、威胁模型与手工验收 |
 | [FEATURE_DM_NOTES.md](../FEATURE_DM_NOTES.md) | 明文私信边界、独立表、接口、升级和双账号验收 |
 | [FEATURE_AI_NOTES.md](../FEATURE_AI_NOTES.md) | 助手 P0、SSE、配额、过滤、明文边界与本地验收 |
+| [VOICE_STREAM_NOTES.md](../VOICE_STREAM_NOTES.md) | 房间语音密文协议、迁移、录音 / 播放边界与助手流式链路验证 |
 | [SECURITY.md](../SECURITY.md) | 登录、角色、直连 IP 限流、代理与 localStorage 风险；房间正文规则结合 E2EE 说明阅读 |
 | [LOGIN_MOTION_NOTES.md](../LOGIN_MOTION_NOTES.md) | 登录视觉 / 动效阶段记录，不作为业务能力规范 |
 | [deploy/README.md](../deploy/README.md) | 现有 ECS 部署约定 |

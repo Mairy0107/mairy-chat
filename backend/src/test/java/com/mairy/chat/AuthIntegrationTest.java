@@ -203,7 +203,7 @@ class AuthIntegrationTest {
                 .header("Access-Control-Request-Method", "GET")).andExpect(status().isForbidden());
     }
 
-    /** 覆盖密文持久化、管理员隔离、成员授权与公钥不可替换边界。 */
+    /** 覆盖文字及语音密文持久化、推送、权限、长度与公钥不可替换边界。 */
     @Test
     @org.junit.jupiter.api.Order(5)
     void e2eeAuthorizationAndOpaqueStorage() throws Exception {
@@ -274,6 +274,45 @@ class AuthIntegrationTest {
                 Map.of("content", "明文", "enc", 0, "iv", "AAAAAAAAAAAAAAAA"))).andExpect(status().isBadRequest());
         mvc.perform(body(post("/api/rooms/{id}/messages", roomId).header("X-Session-Token", peerSession), ip, peer,
                 Map.of("content", ciphertext.get("content"), "enc", 1, "iv", "invalid"))).andExpect(status().isBadRequest());
+        // 语音继续走同一房间权限与IV约束，只保存不透明密文。
+        assertEquals("text", sent.path("kind").asText());
+        String voiceContent = java.util.Base64.getEncoder().encodeToString(new byte[700016]);
+        Map<String, Object> voice = Map.of("enc", 1, "kind", "voice", "iv", "AQAAAAAAAAAAAAAA", "content", voiceContent);
+        mvc.perform(body(post("/api/rooms/{id}/messages", roomId).header("X-Session-Token", peerSession), ip, owner, voice))
+                .andExpect(status().isForbidden());
+        mvc.perform(body(post("/api/rooms/{id}/messages", roomId).header("X-Session-Token", stealthSession), ip, admin, voice))
+                .andExpect(status().isForbidden());
+        // 真实推送保留kind与完整密文，发送循环不增加SQL。
+        Map<String, Object> voiceAttributes = new HashMap<>();
+        assertTrue(handshake(peerSession, voiceAttributes));
+        WebSocketSession voiceSocket = org.mockito.Mockito.mock(WebSocketSession.class);
+        org.mockito.Mockito.when(voiceSocket.getId()).thenReturn("voice-socket");
+        org.mockito.Mockito.when(voiceSocket.isOpen()).thenReturn(true);
+        org.mockito.Mockito.when(voiceSocket.getAttributes()).thenReturn(voiceAttributes);
+        sockets.afterConnectionEstablished(voiceSocket);
+        JsonNode voiceSent = call(post("/api/rooms/{id}/messages", roomId).header("X-Session-Token", peerSession), ip, peer, voice);
+        assertEquals("voice", voiceSent.path("kind").asText());
+        assertEquals(voiceContent, jdbc.queryForObject("SELECT content FROM chat_message WHERE id=?", String.class, voiceSent.path("id").asLong()));
+        org.mockito.ArgumentCaptor<org.springframework.web.socket.WebSocketMessage<?>> pushed =
+                org.mockito.ArgumentCaptor.forClass(org.springframework.web.socket.WebSocketMessage.class);
+        org.mockito.Mockito.verify(voiceSocket).sendMessage(pushed.capture());
+        JsonNode pushedVoice = json.readTree(pushed.getValue().getPayload().toString()).path("data");
+        assertEquals("voice", pushedVoice.path("kind").asText());
+        assertEquals(voiceContent, pushedVoice.path("content").asText());
+        JsonNode voiceHistory = call(get("/api/rooms/{id}/messages", roomId).header("X-Session-Token", peerSession), ip, peer, null);
+        assertEquals(voiceContent, voiceHistory.path("records").get(1).path("content").asText());
+        mvc.perform(body(post("/api/rooms/{id}/messages", roomId).header("X-Session-Token", peerSession), ip, peer, voice))
+                .andExpect(status().isConflict());
+        for (Map<String, Object> invalid : List.of(
+                Map.<String, Object>of("enc", 0, "kind", "voice", "iv", "AgAAAAAAAAAAAAAA", "content", "plain-audio"),
+                Map.<String, Object>of("enc", 1, "kind", "file", "iv", "AgAAAAAAAAAAAAAA", "content", ciphertext.get("content")),
+                Map.<String, Object>of("enc", 1, "kind", "text", "iv", "AgAAAAAAAAAAAAAA", "content", voiceContent),
+                Map.<String, Object>of("enc", 1, "kind", "voice", "iv", "AgAAAAAAAAAAAAAA", "content", java.util.Base64.getEncoder().encodeToString(new byte[700017])),
+                Map.<String, Object>of("enc", 1, "kind", "voice", "iv", "AgAAAAAAAAAAAAAA", "content", java.util.Base64.getEncoder().encodeToString(new byte[700018])),
+                Map.<String, Object>of("enc", 1, "kind", "voice", "iv", "AgAAAAAAAAAAAAAA", "content", "invalid"))) {
+            mvc.perform(body(post("/api/rooms/{id}/messages", roomId).header("X-Session-Token", peerSession), ip, peer, invalid))
+                    .andExpect(status().isBadRequest());
+        }
         // 管理员重置登录密码后，原公开身份仍然不能替换。
         call(post("/api/admin/users/{id}/reset-password", peerId), ip, admin, Map.of("password", "Temporary@123"));
         String resetLogin = call(post("/api/auth/login"), ip, null, Map.of("username", "keypeer", "password", "Temporary@123")).path("token").asText();

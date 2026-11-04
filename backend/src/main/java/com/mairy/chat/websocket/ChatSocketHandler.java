@@ -31,7 +31,7 @@ public class ChatSocketHandler extends TextWebSocketHandler {
     private final AuthService auth;
     private final Map<Long, Map<String, WebSocketSession>> rooms = new ConcurrentHashMap<>();
 
-    /** 按服务端会话分组，装饰器限制慢连接并发发送。 */
+    /** 按会话分组，缓冲容纳单条语音密文并限制慢连接并发发送。 */
     @Override
     public synchronized void afterConnectionEstablished(WebSocketSession session) {
         Member member = (Member) session.getAttributes().get(SessionHandshakeInterceptor.MEMBER_ATTRIBUTE);
@@ -42,7 +42,7 @@ public class ChatSocketHandler extends TextWebSocketHandler {
             disconnect(session);
             return;
         }
-        WebSocketSession safeSession = new ConcurrentWebSocketSessionDecorator(session, 5000, 65536);
+        WebSocketSession safeSession = new ConcurrentWebSocketSessionDecorator(session, 5000, 1048576);
         rooms.compute(member.getRoomId(), (roomId, sockets) -> {
             Map<String, WebSocketSession> result = sockets == null ? new ConcurrentHashMap<>() : sockets;
             result.put(session.getId(), safeSession);
