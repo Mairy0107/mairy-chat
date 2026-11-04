@@ -87,8 +87,31 @@ async function submit() {
 </script>
 
 <template>
-  <!-- 纸卡只承载账号操作，省去宣传区与重复提示。 -->
+  <!-- 左侧纸艺仅作装饰，右侧纸卡保留原有账号操作。 -->
   <section class="auth-layout" :class="{ 'is-entering': entering }">
+    <div class="auth-visual" aria-hidden="true">
+      <svg viewBox="0 0 540 480" fill="none" focusable="false">
+        <!-- 底纸与撕边纸错位叠放，留白承接页面米纸底色。 -->
+        <g transform="rotate(-11 240 262)">
+          <rect class="visual-underpaper" x="76" y="110" width="290" height="304" rx="4" />
+          <path class="visual-stitch" d="M96 136H346M96 386H280" />
+        </g>
+        <g transform="rotate(6 284 240)">
+          <path class="visual-underpaper" d="M138 76H405L432 103V399L420 395L408 401L396 397L384 403L372 398L360 402L348 397L336 401L324 396L312 402L300 398L288 403L276 397L264 401L252 396L240 402L228 398L216 402L204 397L192 401L180 396L168 402L156 398L144 402L138 398Z" />
+          <path class="visual-paper" d="M132 68H399L426 95V391L414 387L402 393L390 389L378 395L366 390L354 394L342 389L330 393L318 388L306 394L294 390L282 395L270 389L258 393L246 388L234 394L222 390L210 394L198 389L186 393L174 388L162 394L150 390L138 394L132 390Z" />
+          <path class="visual-fold" d="M399 68V95H426" />
+          <path class="visual-stitch" d="M154 328H404" />
+        </g>
+        <!-- 复用品牌门标的邮票虚线与拱门比例，避免引入另一套图案。 -->
+        <g transform="translate(211 125) rotate(6 72 90) scale(3)">
+          <path class="visual-stamp" d="M4 3H44V57H4Z" stroke-dasharray="3 3" />
+          <path class="visual-stamp" d="M12 49V25A12 12 0 0 1 36 25V49Z" />
+          <circle class="visual-leaf" cx="31" cy="35" r="1" />
+        </g>
+        <path class="visual-citrus" d="M96 302L160 292L164 310L100 321Z" />
+        <path class="visual-thread" d="M61 236C17 304 83 373 142 346M405 172C472 147 502 190 472 235" />
+      </svg>
+    </div>
     <div class="auth-card paper-stack">
       <nav class="auth-tabs" aria-label="账号入口">
         <RouterLink to="/login" :aria-current="mode === 'login' ? 'page' : undefined">登录</RouterLink>
@@ -118,9 +141,20 @@ async function submit() {
 </template>
 
 <style scoped>
-/* 登录、注册和找回密码共用一张裁角纸卡。 */
-.auth-layout { display: grid; place-items: center; padding: clamp(32px, 8vh, 88px) 0 48px; }
-.auth-card { width: min(100%, 480px); padding: 32px 40px 40px; }
+/* 桌面左纸艺、右表单；列宽可收缩，纸卡和焦点环不裁切。 */
+.auth-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 480px); align-items: center; gap: clamp(32px, 6vw, 80px); padding: clamp(32px, 8vh, 88px) 0 48px; }
+.auth-card { width: 100%; max-width: 480px; min-width: 0; padding: 32px 40px 40px; }
+/* 纯 SVG 纸艺沿用现有令牌，静态呈现以保持表单为视觉焦点。 */
+.auth-visual { min-width: 0; pointer-events: none; }
+.auth-visual svg { display: block; width: 100%; max-width: 540px; height: auto; margin: 0 auto; }
+.visual-underpaper { fill: var(--underpaper); }
+.visual-paper { fill: var(--paper); }
+.visual-fold { fill: var(--rice); stroke: var(--line); stroke-width: 1; }
+.visual-stitch { stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 2 6; stroke-linecap: round; }
+.visual-stamp { stroke: var(--leaf); stroke-width: 1.4; }
+.visual-leaf { fill: var(--leaf); }
+.visual-citrus { fill: var(--citrus); }
+.visual-thread { stroke: var(--ink); stroke-width: 1; stroke-dasharray: 2 7; stroke-linecap: round; opacity: 0.3; }
 .auth-tabs { display: flex; gap: 32px; margin-bottom: 32px; border-bottom: 1px dotted var(--line); }
 .auth-tabs a { position: relative; padding: 10px 2px 14px; color: var(--muted); }
 .auth-tabs a[aria-current='page'] { color: var(--ink); font-weight: 700; }
@@ -136,6 +170,12 @@ async function submit() {
 .auth-back { display: inline-block; padding: 12px 0 0; margin-top: 12px; font-size: 14px; }
 /* 仅首次登录归位，不对输入和错误重复播放。 */
 .is-entering .auth-card { animation: paper-settle var(--motion-enter) var(--ease-paper) both; }
+/* 窄屏隐藏装饰，登录、注册和找回密码均保留完整可用宽度。 */
+@media (max-width: 899px) {
+  .auth-layout { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .auth-visual { display: none; }
+  .auth-card { justify-self: center; }
+}
 @media (max-width: 600px) {
   .auth-layout { padding-top: 28px; }
   .auth-card { padding: 26px 24px 32px; }
