@@ -121,6 +121,8 @@ onMounted(async () => {
       <div class="section-heading"><div><span class="room-label">{{ auth.user.publicNo }}</span><h2>{{ auth.user.nickname }}，你好</h2></div><button class="secondary" :disabled="loading" @click="loadRooms(true)">刷新大厅</button></div>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <p v-if="notice" class="notice" role="status">{{ notice }}</p>
+      <!-- 助手入口始终可见，是否配置由独立页面展示。 -->
+      <RouterLink class="assistant-entry paper-stack" to="/assistant"><span><strong>助手</strong><small>问个问题，理理思路</small></span><span aria-hidden="true">聊聊 →</span></RouterLink>
       <div class="my-room paper-stack">
         <h3>我的房间</h3>
         <div v-if="mine" class="section-heading"><span>{{ mine.name }}</span><RouterLink class="button-link" :to="`/room/${mine.id}`">进入 →</RouterLink></div>
@@ -147,3 +149,11 @@ onMounted(async () => {
     </aside>
   </div>
 </template>
+
+<style scoped>
+/* 大厅助手便签只扩展本页，不改动公共组件与房间票卡。 */
+.assistant-entry { display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); min-height: 80px; padding: var(--space-4) var(--space-6); margin-bottom: var(--space-6); --surface: var(--warning); color: var(--ink); }
+.assistant-entry:hover { text-decoration: none; outline: 1px solid var(--action); }
+.assistant-entry strong { display: block; font: 22px var(--font-title); }
+.assistant-entry small { display: block; margin-top: 4px; color: var(--muted); }
+</style>

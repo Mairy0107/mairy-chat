@@ -50,6 +50,7 @@
 | --- | --- |
 | `/login`、`/register`、`/forgot-password` | `AuthView.vue` 复用账号表单，公开访问 |
 | `/app` | `RoomListView.vue`，房间大厅、自建房、好友与私信入口 |
+| `/assistant` | `AssistantView.vue`，登录用户的独立文字助手、会话历史与 SSE 回复 |
 | `/room/:id` | `RoomEntryView.vue` 读取房间并创建进房会话，再交给 `ChatRoomView.vue` |
 | `/dm/:userId` | `DmChatView.vue`，按对方用户主键打开好友私信 |
 | `/admin` | `AdminView.vue`，仅管理员进入 |
@@ -254,7 +255,43 @@ API 与 WS 握手按直连 IP 合计每分钟 240 次；登录每 15 分钟 20 �
 
 仓库没有独立 `.sh` / `.ps1` 自动部署或数据库迁移脚本，现有入口就是上述 Docker / Compose / nginx 文件及手动 SQL。部署不会自动升级数据库。
 
-## 12. 相关文档与维护检查
+## 12. AI 通用助手 P0
+
+大厅便签「助手」进入 `/assistant`，生产路径为 `/chat/assistant`。页面复用现有纸笺令牌；前端 `api/ai.js` 复用普通 REST 封装，流式发送使用带 Bearer 的 fetch / ReadableStream，`api/ai-stream.js` 增量解析 UTF-8 SSE。流期间提供停止按钮；用户阅读历史时不强制滚动到底部。内容按纯文本渲染。
+
+后端 `AiController → service/ai/AiService → AiThreadMapper / AiMessageMapper / AiUsageMapper` 负责归属、历史与短事务；`AiStreamService` 管理 SSE 和过滤，`DeepSeekClient` 使用现有 Spring MVC 的 RestClient 调用 OpenAI 兼容的 `/chat/completions`，不依赖 Spring AI / WebFlux。所有 `/api/ai/**` 复用现有 Bearer 鉴权，只有归属账号可读写；管理员也没有读取他人助手会话的接口。房间 / DM WebSocket 不参与助手流程。
+
+**助手对话为服务端明文，数据库及服务端可以读取，并会向配置的 DeepSeek 服务发送当前会话上下文；房间 E2EE 不覆盖助手。** 系统提示要求友善简洁中文、不确定说「不知道」、不编造用户经历、拒绝密码和秘密；助手没有房间、私信、档案或外部工具访问能力。
+
+| 方法与路径 | 当前行为 |
+| --- | --- |
+| GET `/api/ai/status` | `{enabled,quotaRemaining,quotaLimit,profileCompleted:false}`；P1 问卷与人格覆盖未实现 |
+| POST / GET `/api/ai/threads` | 创建本人空会话 / 最近100个本人会话；创建不消耗模型次数 |
+| GET `/api/ai/threads/{id}/messages?beforeId=&size=30` | 本人会话的主键游标历史，size 1～50，返回 records / nextBeforeId / hasMore |
+| POST `/api/ai/threads/{id}/messages` | `{content}`，非空、最多2000字符；校验成功后返回 text/event-stream |
+
+SSE 事件依次为 `user`（已保存的用户消息）、`delta`（安全增量）、可选 `replace`（用安全提示替换临时文本）、`done`（已保存 assistant 消息、剩余次数及 outcome）。流开始前的失败沿用 JSON 中文错误，缺少密钥返回503「助手未配置」，配额耗尽返回429；流开始后的上游 / 过滤错误替换为安全提示并保存，保存或确认失败发 `error`，客户端提示刷新。只有收到 `done` 才确认回复完成；截断流不视为成功。
+
+| 表 / 配置 | 当前实现 |
+| --- | --- |
+| `chat_ai_thread` | user_id 归属、首条消息摘要、上海创建 / 更新时间；active_request_id / busy_until 为3分钟生成租约，防止同一会话并发，旧租约不能写入新一轮回复 |
+| `chat_ai_message` | thread_id、role、TEXT 明文、上海时间；索引 `(thread_id,id)`，系统提示不入库 |
+| `chat_ai_usage_daily` | 主键 `(user_id,usage_date)`；日期来自 `ChatTime.now().toLocalDate()`，条件 UPDATE 原子计数；token_estimate 在 P0 留空 |
+| `chat.ai.api-key` / `DEEPSEEK_API_KEY` | 服务端凭证环境占位，默认空；不得使用 VITE_ 或写入日志 |
+| `chat.ai.base-url` / `DEEPSEEK_BASE_URL` | 默认 `https://api.deepseek.com`；支持兼容服务根路径 |
+| `chat.ai.model` / `DEEPSEEK_MODEL` | 默认 `deepseek-chat` |
+| `chat.ai.daily-quota` | 默认40次，允许0关闭额度；计数持久化，服务重启不重置 |
+| `sensitive-words.txt` + `chat.ai.sensitive-words` | 合并资源和配置词表，忽略空行 / 注释，字面子串匹配并忽略英文大小写 |
+
+已有账号版数据库手动执行 `backend/src/main/resources/schema-upgrade-ai.sql`，仅 `CREATE TABLE IF NOT EXISTS`，可重复执行；空库使用已包含这三张表的 `schema.sql`。启动不自动迁移数据库。
+
+输入过滤在调用模型及占额前完成；输出扫描上次尾部与新分片，保留最长词长减一的尾部后才输出，防止跨分片命中词泄漏，完成时全量复查。命中停止读取上游，替换为统一中文拒绝并仅保存拒绝文本。日志只记 `ai_audit type=...`，不记录正文、命中词、上游错误体或凭证。此为基础词表过滤，不具备语义审核或反混淆能力。
+
+用户消息、次数与租约在同一短事务中保存；最终 assistant 消息和释放租约共用另一个事务，模型等待不占用数据库事务。通过校验的请求计一次，模型失败 / 停止仍计次，不自动重试；未配置、越权、输入拦截、忙碌和超额均不调用模型。模型上下文限最近20条、合计24000字符，输出限16000字符 / 请求 max_tokens=2048，温度0.3。同步 MVC 最多8条并行流，连接等待10秒、单次读取等待45秒、总读取预算120秒；客户端180秒超时。停止读取会在服务端下一次传输发现断连后关闭上游，进程异常时租约到期恢复；可能留下只有用户消息的未完成一轮。
+
+响应设置 `X-Accel-Buffering: no`、`Cache-Control: no-cache, no-transform`，用于既有 nginx API 代理的逐步转发。部署方需保留该响应头行为及足够的 SSE 超时。P0 仅文字，不包含问卷、人格覆盖、语音、附件、删除记录、token计费、语义审核或工具调用。验收和边界见 [FEATURE_AI_NOTES.md](../FEATURE_AI_NOTES.md)。
+
+## 13. 相关文档与维护检查
 
 | 文档 | 阅读用途 |
 | --- | --- |
@@ -262,6 +299,7 @@ API 与 WS 握手按直连 IP 合计每分钟 240 次；登录每 15 分钟 20 �
 | [AUTH_IMPLEMENTATION_NOTES.md](../AUTH_IMPLEMENTATION_NOTES.md) | 账号阶段实现、权限、并发控制与当时的验收记录；“无私聊”等是阶段性描述 |
 | [SECURITY_E2EE_NOTES.md](../SECURITY_E2EE_NOTES.md) | 加密协议、指纹双向核验、设备备份恢复、威胁模型与手工验收 |
 | [FEATURE_DM_NOTES.md](../FEATURE_DM_NOTES.md) | 明文私信边界、独立表、接口、升级和双账号验收 |
+| [FEATURE_AI_NOTES.md](../FEATURE_AI_NOTES.md) | 助手 P0、SSE、配额、过滤、明文边界与本地验收 |
 | [SECURITY.md](../SECURITY.md) | 登录、角色、直连 IP 限流、代理与 localStorage 风险；房间正文规则结合 E2EE 说明阅读 |
 | [LOGIN_MOTION_NOTES.md](../LOGIN_MOTION_NOTES.md) | 登录视觉 / 动效阶段记录，不作为业务能力规范 |
 | [deploy/README.md](../deploy/README.md) | 现有 ECS 部署约定 |

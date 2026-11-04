@@ -6,6 +6,7 @@ import RoomListView from './views/RoomListView.vue'
 import RoomEntryView from './views/RoomEntryView.vue'
 import AdminView from './views/AdminView.vue'
 import DmChatView from './views/DmChatView.vue'
+import AssistantView from './views/AssistantView.vue'
 
 export const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -15,6 +16,8 @@ export const router = createRouter({
     { path: '/register', component: AuthView, meta: { guest: true } },
     { path: '/forgot-password', component: AuthView, meta: { guest: true } },
     { path: '/app', component: RoomListView },
+    // 文字助手独立页面，复用登录守卫，不依赖房间密钥。
+    { path: '/assistant', component: AssistantView },
     { path: '/admin', component: AdminView, meta: { admin: true } },
     { path: '/room/:id', component: RoomEntryView },
     // 私信与进房流程独立，仍复用全局登录守卫。
