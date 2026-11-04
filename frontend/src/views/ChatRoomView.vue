@@ -326,9 +326,11 @@ onBeforeUnmount(() => {
 <template>
   <section class="panel chat-panel">
     <div class="section-heading">
-      <div>
-        <h2>{{ chat.room.name }}</h2>
-        <p class="muted">{{ chat.member.nickname }} {{ chat.stealth ? "· 隐身只读" : "" }} · <span role="status">{{ status }}</span></p>
+      <!-- 门标接续大厅票卡，消息区域保持静态阅读。 -->
+      <div class="chat-identity">
+        <span class="paper-mark" aria-hidden="true"></span>
+        <div><h2>{{ chat.room.name }}</h2>
+        <p class="muted">{{ chat.member.nickname }} {{ chat.stealth ? "· 隐身只读" : "" }} · <span role="status">{{ status }}</span></p></div>
       </div>
       <button class="secondary" @click="$emit('leave')">返回大厅</button>
     </div>
@@ -401,13 +403,15 @@ onBeforeUnmount(() => {
       <button type="button" class="secondary key-entry" :class="{ 'key-ready': keyReady }" aria-haspopup="dialog" @click="openKeyDialog">设备密钥</button>
       <button class="secondary" :disabled="refreshing || loadingHistory || sessionExpired" @click="refreshHistory">刷新消息</button>
       <button v-if="status === '实时连接已断开'" class="secondary" :disabled="sessionExpired" @click="connect">重新连接</button>
+      <!-- 禁用发送时保留简短的密钥操作指引。 -->
+      <span v-if="auth.user?.role === 'USER' && !chat.stealth" class="muted key-hint" role="status">{{ keyReady ? '加密已就绪' : '发送前请打开设备密钥' }}</span>
     </div>
     <div ref="messageList" class="message-list" role="log" aria-label="聊天消息" aria-live="polite">
       <button v-if="hasMore" class="secondary load-more" :disabled="loadingHistory || refreshing" @click="loadOlder">
         {{ loadingHistory ? '加载中…' : '加载更早消息' }}
       </button>
-      <p v-if="refreshing" class="empty">正在加载最近消息…</p>
-      <p v-else-if="!messages.length" class="empty">还没有消息，打个招呼吧。</p>
+      <p v-if="refreshing" class="empty">加载中…</p>
+      <p v-else-if="!messages.length" class="empty">暂无消息</p>
       <article v-for="message in messages" :key="message.id" class="message"
         :class="{ own: message.memberId === chat.member.id }">
         <div class="message-meta"><span>{{ message.legacy ? "旧明文" : "加密消息" }}</span><strong>{{ message.nickname }}</strong><time>{{ formatTime(message.createdAt) }}</time></div>
@@ -419,36 +423,37 @@ onBeforeUnmount(() => {
     <form v-else class="composer" @submit.prevent="handleSend">
       <label for="message-content">说点什么</label>
       <textarea ref="composerInput" id="message-content" @keydown="handleEnter" v-model="draft" maxlength="1000" rows="3"
-        :disabled="sessionExpired || !keyReady" placeholder="分享此刻的想法…" required></textarea>
+        :disabled="sessionExpired || !keyReady" placeholder="说点什么…" required></textarea>
       <div class="emoji-picker" aria-label="表情选择器">
         <button v-for="emoji in emojis" :key="emoji" type="button" class="secondary" :disabled="sessionExpired" :aria-label="`插入表情 ${emoji}`" @click="insertEmoji(emoji)">{{ emoji }}</button>
       </div>
       <div class="composer-footer">
         <span class="muted">{{ draft.length }} / 1000 · Enter发送 · Shift+Enter换行</span>
-        <button :disabled="sending || sessionExpired || !keyReady || keyBusy || !draft.trim()">{{ sending ? '发送中…' : '发送消息' }}</button>
+        <button :disabled="sending || sessionExpired || !keyReady || keyBusy || !draft.trim()">{{ sending ? '发送中…' : '发送' }}</button>
       </div>
     </form>
   </section>
 </template>
 
 <style scoped>
-/* 密钥界面局限于房间页，沿用现有按钮、表单和配色。 */
-.key-entry::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: #8895ab; }
-.key-entry.key-ready::before { background: #347d58; }
-.key-dialog { width: min(460px, calc(100% - 32px)); max-height: calc(100dvh - 48px); padding: 24px; border: 1px solid #e2e7ef; border-radius: 16px; color: inherit; background: #fff; box-shadow: 0 24px 70px #24365a26; overflow-y: auto; }
-.key-dialog::backdrop { background: #17283e66; }
+/* 密钥弹窗复用纸面令牌，安全提示与指纹核验保持可见。 */
+.key-entry::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: var(--muted); }
+.key-entry.key-ready::before { background: var(--action); }
+.key-dialog { width: min(460px, calc(100% - 32px)); max-height: calc(100dvh - 48px); padding: 24px; border: 1px solid var(--line); border-radius: var(--radius-dialog); color: var(--ink); background: var(--paper); box-shadow: var(--shadow-paper); overflow-y: auto; }
+.key-dialog[open] { animation: paper-settle 240ms var(--ease-paper); }
+.key-dialog::backdrop { background: #263e3466; }
 .key-dialog-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 18px; }
 .key-dialog-heading button { padding: 6px 12px; }
 .key-status, .key-warning { padding: 10px 12px; margin-bottom: 18px; border-radius: 8px; font-size: 14px; overflow-wrap: anywhere; }
-.key-status { background: #f3f5f9; }
-.key-warning { background: #fff5e5; color: #80541b; }
+.key-status { background: var(--tint); }
+.key-warning { background: var(--warning); color: var(--ink); }
 .key-form, .key-section-content { display: grid; gap: 12px; }
 .key-form button, .key-section-content > button { justify-self: start; }
 .key-refresh { margin-bottom: 4px; }
-.key-section { margin-top: 18px; padding-top: 14px; border-top: 1px solid #e7ecf2; }
+.key-section { margin-top: 18px; padding-top: 14px; border-top: 1px dotted var(--line); }
 .key-section summary { cursor: pointer; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
 .key-section-content, .key-candidate .key-form { margin-top: 12px; }
-.key-fingerprint { padding: 10px 12px; border-radius: 8px; background: #f5f7fb; overflow-wrap: anywhere; font-family: monospace; font-size: 13px; user-select: all; }
+.key-fingerprint { padding: 10px 12px; border-radius: 8px; background: var(--rice); overflow-wrap: anywhere; font-family: monospace; font-size: 13px; user-select: all; }
 /* 小屏让入口自动换行，对话框保持可滚动。 */
 .chat-tools { flex-wrap: wrap; }
 @media (max-width: 600px) {

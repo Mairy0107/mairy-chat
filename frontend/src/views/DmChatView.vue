@@ -223,10 +223,11 @@ onBeforeUnmount(() => {
 <template>
   <section class="panel chat-panel dm-panel">
     <div class="section-heading">
-      <div><span class="room-label">好友私信</span><h2>{{ thread?.peer.nickname || '私信' }}</h2><p v-if="thread" class="muted">{{ thread.peer.publicNo }} · <span role="status">{{ status }}</span></p></div>
-      <RouterLink class="button-link" to="/app">返回大厅</RouterLink>
+      <!-- 私信沿用房间的纸卡标题，仅以短标签区分会话。 -->
+      <div class="chat-identity"><span class="paper-mark" aria-hidden="true"></span><div><span class="room-label">私信</span><h2>{{ thread?.peer.nickname || '私信' }}</h2><p v-if="thread" class="muted">{{ thread.peer.publicNo }} · <span role="status">{{ status }}</span></p></div></div>
+      <RouterLink class="button-link secondary" to="/app">返回大厅</RouterLink>
     </div>
-    <p class="notice">私信暂未端到端加密，服务器可读取内容。</p>
+    <p class="notice dm-privacy">私信未加密，服务器可读取内容。</p>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <p v-if="opening" class="empty">正在打开私信…</p>
     <button v-if="!opening && !thread && !blocked" class="secondary" @click="start(route.params.userId)">重试</button>
@@ -238,7 +239,7 @@ onBeforeUnmount(() => {
       <div ref="messageList" class="message-list" role="log" aria-label="私信消息" aria-live="polite">
         <button v-if="hasMore && !blocked" class="secondary load-more" :disabled="loadingOlder || refreshing" @click="loadOlder">{{ loadingOlder ? '加载中…' : '加载更早消息' }}</button>
         <p v-if="refreshing" class="empty">正在加载消息…</p>
-        <p v-else-if="!messages.length && !blocked" class="empty">还没有消息，打个招呼吧。</p>
+        <p v-else-if="!messages.length && !blocked" class="empty">暂无消息</p>
         <article v-for="message in messages" :key="message.id" class="message" :class="{ own: message.senderId === auth.user?.id }">
           <div class="message-meta"><strong>{{ message.senderId === auth.user?.id ? '我' : thread.peer.nickname }}</strong><time>{{ formatTime(message.createdAt) }}</time></div>
           <!-- 文本插值避免将好友输入渲染为 HTML。 -->
@@ -248,7 +249,7 @@ onBeforeUnmount(() => {
       <form class="composer" @submit.prevent="handleSend">
         <label for="dm-content">发给 {{ thread.peer.nickname }}</label>
         <textarea id="dm-content" v-model="draft" maxlength="1000" rows="3" :disabled="blocked" placeholder="说点什么…" required @keydown="handleEnter"></textarea>
-        <div class="composer-footer"><span class="muted">{{ draft.length }} / 1000 · Enter发送 · Shift+Enter换行</span><button :disabled="sending || blocked || !draft.trim()">{{ sending ? '发送中…' : '发送私信' }}</button></div>
+        <div class="composer-footer"><span class="muted">{{ draft.length }} / 1000 · Enter发送 · Shift+Enter换行</span><button :disabled="sending || blocked || !draft.trim()">{{ sending ? '发送中…' : '发送' }}</button></div>
       </form>
     </template>
   </section>

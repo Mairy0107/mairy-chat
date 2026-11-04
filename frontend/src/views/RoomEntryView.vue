@@ -28,9 +28,10 @@ onBeforeUnmount(() => { disposed = true })
 
 <template>
   <ChatRoomView v-if="chat" :chat="chat" @leave="router.push('/app')" />
+  <!-- 进入状态复用纸卡，不改变自动进房流程。 -->
   <section v-else class="panel">
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <p v-else class="empty">正在进入房间…</p>
-    <RouterLink to="/app">返回主页</RouterLink>
+    <RouterLink to="/app">返回大厅</RouterLink>
   </section>
 </template>

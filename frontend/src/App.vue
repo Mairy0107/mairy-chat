@@ -25,10 +25,11 @@ async function logout() {
 <template>
   <main class="app-shell">
     <header class="app-header">
-      <span class="brand-mark" aria-hidden="true">M</span>
-      <div class="grow"><h1>Mairy Chat</h1><p>留一间房，给聊得来的人。</p></div>
-      <nav v-if="auth.user" class="header-links">
-        <RouterLink to="/app">主页</RouterLink>
+      <span class="brand-mark paper-mark" aria-hidden="true"></span>
+      <!-- 品牌只保留名称与门标，减少顶部文案。 -->
+      <div class="grow"><h1>Mairy Chat</h1></div>
+      <nav v-if="auth.user" class="header-links" aria-label="主导航">
+        <RouterLink to="/app">大厅</RouterLink>
         <RouterLink v-if="auth.user.role === 'ADMIN'" to="/admin">后台</RouterLink>
         <button class="secondary" :disabled="busy" @click="logout">退出</button>
       </nav>

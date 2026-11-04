@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { createRoom, listRooms, request } from '../api/chat'
 import { auth } from '../auth'
 
@@ -16,6 +16,23 @@ const relations = ref([])
 const error = ref('')
 const notice = ref('')
 const friendBusy = ref(false)
+// 入场只改变纸卡展示，不延迟大厅请求和路由跳转。
+const entering = ref(false)
+let entranceTimer
+let disposed = false
+
+/** 每个标签页首次加载大厅时播放一次纸卡归位。 */
+function startEntrance() {
+  if (disposed || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+  try {
+    if (sessionStorage.getItem('mairy.lobby.entrance.seen')) return
+    sessionStorage.setItem('mairy.lobby.entrance.seen', '1')
+  } catch { return }
+  entering.value = true
+  entranceTimer = setTimeout(() => { entering.value = false }, 360)
+}
+
+onBeforeUnmount(() => { disposed = true; clearTimeout(entranceTimer) })
 const friends = computed(() => relations.value.filter(row => row.status === 'ACCEPTED'))
 const incoming = computed(() => relations.value.filter(row => row.status === 'PENDING' && row.receiver.id === auth.user?.id))
 const outgoing = computed(() => relations.value.filter(row => row.status === 'PENDING' && row.sender.id === auth.user?.id))
@@ -89,6 +106,7 @@ function other(row) {
 
 onMounted(async () => {
   await loadRooms(true)
+  startEntrance()
   try {
     mine.value = await request('/rooms/mine')
     await refreshFriends()
@@ -97,33 +115,34 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="home-grid">
+  <!-- 房间票卡仅支持进入，不呈现多选或默认选中态。 -->
+  <div class="home-grid" :class="{ 'is-entering': entering }">
     <section class="panel home-main">
-      <div class="section-heading"><div><span class="room-label">{{ auth.user.publicNo }} · {{ auth.user.role }}</span><h2>{{ auth.user.nickname }}，你好</h2></div><button class="secondary" :disabled="loading" @click="loadRooms(true)">刷新大厅</button></div>
+      <div class="section-heading"><div><span class="room-label">{{ auth.user.publicNo }}</span><h2>{{ auth.user.nickname }}，你好</h2></div><button class="secondary" :disabled="loading" @click="loadRooms(true)">刷新大厅</button></div>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <p v-if="notice" class="notice" role="status">{{ notice }}</p>
-      <div class="my-room">
+      <div class="my-room paper-stack">
         <h3>我的房间</h3>
-        <div v-if="mine" class="section-heading"><span>{{ mine.name }}</span><RouterLink class="button-link" :to="`/room/${mine.id}`">进入我的房间 →</RouterLink></div>
-        <form v-else class="inline-form" @submit.prevent="handleCreate"><label class="grow">每个账号可以创建一间房<input v-model="roomName" required maxlength="50" placeholder="给你的空间起个名字" /></label><button :disabled="creating || !roomName.trim()">创建房间</button></form>
+        <div v-if="mine" class="section-heading"><span>{{ mine.name }}</span><RouterLink class="button-link" :to="`/room/${mine.id}`">进入 →</RouterLink></div>
+        <form v-else class="inline-form" @submit.prevent="handleCreate"><label class="grow">房间名<input v-model="roomName" required maxlength="50" placeholder="输入房间名" /></label><button :disabled="creating || !roomName.trim()">创建</button></form>
       </div>
       <h3>发现房间</h3>
-      <p v-if="loading && !rooms.length" class="empty">正在寻找房间…</p>
-      <p v-else-if="!rooms.length" class="empty">还没有房间，创建第一个吧。</p>
-      <div class="room-grid"><RouterLink v-for="room in rooms" :key="room.id" class="room-card" :to="`/room/${room.id}`"><span class="room-label">聊天房间</span><strong>{{ room.name }}</strong><span class="muted">进入聊天 →</span></RouterLink></div>
-      <button v-if="rooms.length < total" class="secondary load-more" :disabled="loading" @click="loadRooms()">更多房间</button>
+      <p v-if="loading && !rooms.length" class="empty">加载中…</p>
+      <p v-else-if="!rooms.length" class="empty">暂无房间</p>
+      <div class="room-grid"><RouterLink v-for="room in rooms" :key="room.id" class="room-card" :to="`/room/${room.id}`"><span class="paper-mark room-stamp" aria-hidden="true"></span><strong>{{ room.name }}</strong><span class="ticket-entry">进入 →</span></RouterLink></div>
+      <button v-if="rooms.length < total" class="secondary load-more" :disabled="loading" @click="loadRooms()">更多</button>
     </section>
     <aside class="panel">
       <div class="section-heading"><h2>朋友</h2><button class="secondary" @click="reloadFriends">刷新</button></div>
-      <form class="friend-search" @submit.prevent="search"><label>寻找新朋友<input v-model="keyword" required maxlength="32" placeholder="#0001 / 用户名 / 昵称" /></label><button :disabled="friendBusy">搜索</button></form>
+      <form class="friend-search" @submit.prevent="search"><label>找朋友<input v-model="keyword" required maxlength="32" placeholder="#0001 / 用户名 / 昵称" /></label><button :disabled="friendBusy">搜索</button></form>
       <div v-for="user in results" :key="user.id" class="people-row"><div><strong>{{ user.nickname }}</strong><p class="muted">{{ user.publicNo }} · {{ user.username }}</p></div><button class="secondary" :disabled="friendBusy" @click="friendAction(`/friends/${user.id}`)">加好友</button></div>
       <h3 class="subheading">好友 · {{ friends.length }}</h3>
-      <p v-if="!friends.length" class="muted">搜索编号，认识第一个朋友。</p>
+      <p v-if="!friends.length" class="muted">暂无好友</p>
       <!-- 私信入口使用对方账号，好友权限由后端逐次验证。 -->
       <div v-for="row in friends" :key="row.id" class="people-row"><span>{{ other(row).nickname }} <small class="muted">{{ other(row).publicNo }}</small></span><RouterLink class="button-link" :to="'/dm/' + other(row).id">发私信</RouterLink></div>
-      <h3 class="subheading">收到的请求 · {{ incoming.length }}</h3>
+      <h3 class="subheading">收到 · {{ incoming.length }}</h3>
       <div v-for="row in incoming" :key="row.id" class="people-row"><span>{{ row.sender.nickname }} {{ row.sender.publicNo }}</span><div class="actions"><button :disabled="friendBusy" @click="friendAction(`/friends/requests/${row.id}?accept=true`)">同意</button><button class="secondary" :disabled="friendBusy" @click="friendAction(`/friends/requests/${row.id}?accept=false`)">拒绝</button></div></div>
-      <h3 class="subheading">已发出的请求 · {{ outgoing.length }}</h3>
+      <h3 class="subheading">已发出 · {{ outgoing.length }}</h3>
       <p v-for="row in outgoing" :key="row.id" class="muted">{{ row.receiver.nickname }} {{ row.receiver.publicNo }} · 等待回应</p>
     </aside>
   </div>

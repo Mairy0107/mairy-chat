@@ -89,14 +89,15 @@ onMounted(() => load())
 </script>
 
 <template>
+  <!-- 后台复用同一纸面令牌，管理与权限操作保持原样。 -->
   <section class="panel">
-    <div class="section-heading"><div><span class="room-label">ADMIN CONSOLE</span><h2>管理后台</h2><p class="muted">账号、人工找回与安全状态</p></div><button class="secondary" :disabled="busy" @click="load()">刷新后台</button></div>
+    <div class="section-heading"><div><h2>管理后台</h2></div><button class="secondary" :disabled="busy" @click="load()">刷新后台</button></div>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <p v-if="notice" class="notice" role="status">{{ notice }}</p>
     <h3>用户列表 · {{ total }}</h3>
-    <div class="table-scroll"><table><thead><tr><th>编号</th><th>用户名 / 昵称</th><th>角色 / 状态</th><th>操作</th></tr></thead><tbody><tr v-for="user in users" :key="user.id"><td>{{ user.publicNo }}</td><td>{{ user.username }} / {{ user.nickname }}</td><td>{{ user.role }} / {{ user.disabled ? '停用' : '正常' }}</td><td><button class="secondary" :disabled="busy" @click="selectUser(user)">查看设备 / 重置</button></td></tr></tbody></table></div>
+    <div class="table-scroll"><table><thead><tr><th>编号</th><th>用户名 / 昵称</th><th>角色 / 状态</th><th>操作</th></tr></thead><tbody><tr v-for="user in users" :key="user.id"><td>{{ user.publicNo }}</td><td>{{ user.username }} / {{ user.nickname }}</td><td>{{ user.role === 'ADMIN' ? '管理员' : '用户' }} / {{ user.disabled ? '停用' : '正常' }}</td><td><button class="secondary" :disabled="busy" @click="selectUser(user)">查看设备 / 重置</button></td></tr></tbody></table></div>
     <div class="actions pager"><button class="secondary" :disabled="busy || page <= 1" @click="load(page - 1)">上一页</button><span>第 {{ page }} 页</span><button class="secondary" :disabled="busy || page * 30 >= total" @click="load(page + 1)">下一页</button></div>
-    <form v-if="selected" class="my-room" @submit.prevent="resetPassword">
+    <form v-if="selected" class="my-room paper-stack" @submit.prevent="resetPassword">
       <h3>重置 {{ selected.nickname }} {{ selected.publicNo }}</h3>
       <p class="muted">{{ devices.map(device => device.label).join('、') || '无浏览器注册设备记录（本地种子账号）' }}</p>
       <p class="muted">请先线下核实身份；提交后立即撤销该用户所有登录。重置自己的账号也会退出。</p>
