@@ -595,21 +595,24 @@ onBeforeUnmount(() => {
     </div>
     <p v-if="chat.stealth" class="notice">隐身只读：不会向房间公开成员或进房事件。</p>
     <form v-else class="composer" @submit.prevent="handleSend">
-      <!-- 输入及语音内容可内部滚动，发送栏始终留在底部。 -->
+      <!-- 两行输入与紧凑语音栏按内容占高，超高时内部滚动，发送栏固定在底部。 -->
       <div class="composer-body">
         <label for="message-content">说点什么</label>
-        <textarea ref="composerInput" id="message-content" @keydown="handleEnter" v-model="draft" maxlength="1000" rows="3"
+        <textarea ref="composerInput" id="message-content" @keydown="handleEnter" v-model="draft" maxlength="1000" rows="2"
           :disabled="sessionExpired || !keyReady" placeholder="说点什么…" required></textarea>
-        <div class="emoji-picker" aria-label="表情选择器">
-          <button v-for="emoji in emojis" :key="emoji" type="button" class="secondary" :disabled="sessionExpired" :aria-label="`插入表情 ${emoji}`" @click="insertEmoji(emoji)">{{ emoji }}</button>
-        </div>
-        <!-- 语音只保存在本地，点击发送时才使用房间密钥加密。 -->
-        <div class="voice-tools">
-          <button v-if="voicePhase === 'idle'" type="button" class="secondary"
-            :disabled="!voiceSupported || !keyReady || keyBusy || sending || sessionExpired" @click="startVoice">录语音</button>
-          <button v-if="voicePhase === 'recording'" type="button" @click="stopVoice">结束录音</button>
-          <span class="muted" role="status">{{ voicePhase === 'requesting' ? '请允许使用麦克风' : voicePhase === 'recording' ? '录音中，最多60秒' : voicePhase === 'processing' ? '正在处理录音…' : !voiceSupported ? '录音需HTTPS及浏览器支持' : '最多60秒 · 512 KiB' }}</span>
-          <button v-if="voicePhase !== 'idle'" type="button" class="secondary" :disabled="sending" @click="cancelVoice">取消语音</button>
+        <!-- 表情与录音在宽屏共用一行，窄屏自动换行。 -->
+        <div class="composer-tools">
+          <div class="emoji-picker" aria-label="表情选择器">
+            <button v-for="emoji in emojis" :key="emoji" type="button" class="secondary" :disabled="sessionExpired" :aria-label="`插入表情 ${emoji}`" @click="insertEmoji(emoji)">{{ emoji }}</button>
+          </div>
+          <!-- 语音只保存在本地，点击发送时才使用房间密钥加密。 -->
+          <div class="voice-tools">
+            <button v-if="voicePhase === 'idle'" type="button" class="secondary"
+              :disabled="!voiceSupported || !keyReady || keyBusy || sending || sessionExpired" @click="startVoice">录语音</button>
+            <button v-if="voicePhase === 'recording'" type="button" @click="stopVoice">结束录音</button>
+            <span class="muted" role="status">{{ voicePhase === 'requesting' ? '请允许使用麦克风' : voicePhase === 'recording' ? '录音中，最多60秒' : voicePhase === 'processing' ? '正在处理录音…' : !voiceSupported ? '录音需HTTPS及浏览器支持' : '最多60秒 · 512 KiB' }}</span>
+            <button v-if="voicePhase !== 'idle'" type="button" class="secondary" :disabled="sending" @click="cancelVoice">取消语音</button>
+          </div>
         </div>
         <div v-if="voicePreview" class="voice-tools">
           <audio :src="voicePreview" controls preload="metadata" aria-label="待发送语音预览" @error="error = '当前浏览器无法播放此语音'"></audio>
@@ -627,8 +630,8 @@ onBeforeUnmount(() => {
 
 <style scoped>
 /* 语音控件复用页面令牌与原生播放器，小屏自动换行。 */
-.voice-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
-.voice-tools button { min-height: 44px; }
+.voice-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); margin-top: var(--space-1); }
+.voice-tools .muted { flex: 1; min-width: 0; font-size: 12px; line-height: 1.4; }
 .voice-tools audio, .voice-message audio { width: min(280px, 100%); max-width: 100%; }
 .voice-message { display: grid; gap: 8px; min-width: 0; }
 /* 密钥弹窗复用纸面令牌，安全提示与指纹核验保持可见。 */

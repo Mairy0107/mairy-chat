@@ -435,10 +435,10 @@ onBeforeUnmount(() => {
         </article>
       </div>
       <form class="composer" @submit.prevent="handleSend">
-        <!-- 输入及语音内容可内部滚动，发送栏始终留在底部。 -->
+        <!-- 两行输入与紧凑语音栏按内容占高，超高时内部滚动，发送栏固定在底部。 -->
         <div class="composer-body">
           <label for="dm-content">发给 {{ thread.peer.nickname }}</label>
-          <textarea id="dm-content" v-model="draft" maxlength="1000" rows="3" :disabled="blocked" placeholder="说点什么…" required @keydown="handleEnter"></textarea>
+          <textarea id="dm-content" v-model="draft" maxlength="1000" rows="2" :disabled="blocked" placeholder="说点什么…" required @keydown="handleEnter"></textarea>
           <!-- 语音只保存在本地，点击发送时明文上传。 -->
           <div class="voice-tools">
             <button v-if="voicePhase === 'idle'" type="button" class="secondary"
@@ -464,8 +464,8 @@ onBeforeUnmount(() => {
 .dm-panel .button-link { flex-shrink: 0; }
 .dm-panel .chat-tools { flex-wrap: wrap; }
 /* 原生音频与录制按钮沿用纸卡样式，小屏自动换行。 */
-.voice-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
-.voice-tools button { min-height: 44px; }
+.voice-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); margin-top: var(--space-1); }
+.voice-tools .muted { flex: 1; min-width: 0; font-size: 12px; line-height: 1.4; }
 .voice-tools audio, .voice-message audio { width: min(280px, 100%); max-width: 100%; }
 .voice-message { display: grid; gap: 8px; min-width: 0; }
 </style>
