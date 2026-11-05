@@ -14,7 +14,11 @@ public class DmMessage {
     private Long id;
     private Long threadId;
     private Long senderId;
+    // 语音正文为明文 Base64，格式与毫秒时长独立保存，不使用房间密钥。
     private String content;
+    private String kind;
+    private String mime;
+    private Integer duration;
     private Integer enc;
     private String iv;
     private LocalDateTime createdAt;

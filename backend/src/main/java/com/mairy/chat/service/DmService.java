@@ -13,6 +13,7 @@ import com.mairy.chat.mapper.DmMessageMapper;
 import com.mairy.chat.mapper.DmThreadMapper;
 import com.mairy.chat.util.ChatTime;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.function.Function;
@@ -70,20 +71,57 @@ public class DmService extends ServiceImpl<DmThreadMapper, DmThread> {
                 rows.isEmpty() ? null : rows.get(0).getId().toString(), hasMore);
     }
 
-    /** 仅由登录身份确定发送人，固定 enc=0 并以上海时间保存。 */
+    /** 校验文字或明文语音，仅由登录身份确定发送人，固定 enc=0。 */
     @Transactional
     public DmViews.MessageView send(Long threadId, DmRequests.SendMessage request) {
         DmThread thread = requireThread(threadId);
+        String kind = request.kind() == null ? "text" : request.kind();
+        validateMessage(request, kind);
         DmMessage message = new DmMessage();
         message.setThreadId(threadId);
         message.setSenderId(auth.current().user().getId());
-        message.setContent(request.content().strip());
+        message.setContent("voice".equals(kind) ? request.content() : request.content().strip());
+        message.setKind(kind);
+        message.setMime(request.mime());
+        message.setDuration(request.duration() == null ? null : request.duration().intValueExact());
         message.setEnc(0);
         message.setCreatedAt(ChatTime.now());
         messages.insert(message);
         DmViews.MessageView view = toView(message);
         events.publishEvent(new DmMessageSent(thread.getUserLow(), thread.getUserHigh(), view));
         return view;
+    }
+
+    /** 类型白名单、规范 Base64 和音频限额均在入库前检查，绝不复用房间密钥。 */
+    private void validateMessage(DmRequests.SendMessage request, String kind) {
+        if ("text".equals(kind)) {
+            if (request.content().length() > 1000 || request.mime() != null || request.duration() != null) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "文字最多1000字，不能包含语音参数");
+            }
+            return;
+        }
+        if (!"voice".equals(kind)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "消息类型无效");
+        }
+        if (request.mime() == null || !List.of("audio/webm;codecs=opus", "audio/webm",
+                "audio/ogg;codecs=opus", "audio/ogg", "audio/mp4").contains(request.mime())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "语音格式无效");
+        }
+        try {
+            int duration = request.duration() == null ? 0 : request.duration().intValueExact();
+            if (duration < 1 || duration > 60000) throw new ArithmeticException();
+        } catch (ArithmeticException exception) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "语音时长须为1至60000整数毫秒");
+        }
+        try {
+            byte[] bytes = Base64.getDecoder().decode(request.content());
+            if (bytes.length < 1 || bytes.length > 512 * 1024
+                    || !Base64.getEncoder().encodeToString(bytes).equals(request.content())) {
+                throw new IllegalArgumentException();
+            }
+        } catch (IllegalArgumentException exception) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "语音须为不超过512 KiB的规范Base64");
+        }
     }
 
     /** REST 共用成员检查，不向无关用户暴露会话是否存在。 */
@@ -115,6 +153,7 @@ public class DmService extends ServiceImpl<DmThreadMapper, DmThread> {
     /** 返回固定明文标记，不暴露实体或额外身份字段。 */
     private DmViews.MessageView toView(DmMessage message) {
         return new DmViews.MessageView(message.getId().toString(), message.getThreadId().toString(),
-                message.getSenderId().toString(), message.getContent(), 0, null, message.getCreatedAt());
+                message.getSenderId().toString(), message.getContent(), 0, null, message.getCreatedAt(),
+                message.getKind() == null ? "text" : message.getKind(), message.getMime(), message.getDuration());
     }
 }

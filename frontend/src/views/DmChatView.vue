@@ -3,6 +3,7 @@ import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { listDmMessages, openDm, openDmSocket, sendDmMessage } from '../api/chat'
 import { auth } from '../auth'
+import { encodeDmVoice, readDmVoice, maxVoiceBytes, maxVoiceDuration, voiceMimeTypes } from '../media/dm-voice'
 
 const route = useRoute()
 const thread = ref(null)
@@ -23,15 +24,182 @@ let generation = 0
 let historyVersion = 0
 let disposed = false
 
+// 复用房间录音交互，私信不需要设备解锁或房间密钥。
+const voicePhase = ref('idle')
+const voicePreview = ref('')
+const voiceDuration = ref(0)
+const voiceSupported = window.isSecureContext === true && typeof MediaRecorder !== 'undefined'
+  && typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia
+let voiceBlob = null
+let recorder = null
+let microphone = null
+let voiceTimer = null
+let voiceVersion = 0
+
+/** 释放麦克风和定时器，结束后不再占用录音设备。 */
+function releaseMicrophone() {
+  clearTimeout(voiceTimer)
+  voiceTimer = null
+  microphone?.getTracks().forEach(track => track.stop())
+  microphone = null
+}
+
+/** 取消录制或草稿，版本号使迟到的授权和录音回调失效。 */
+function cancelVoice() {
+  voiceVersion++
+  if (recorder && recorder.state !== 'inactive') recorder.stop()
+  recorder = null
+  releaseMicrophone()
+  if (voicePreview.value) URL.revokeObjectURL(voicePreview.value)
+  voicePreview.value = ''
+  voiceBlob = null
+  voiceDuration.value = 0
+  voicePhase.value = 'idle'
+}
+
+/** 刷新、权限失效和离开页面时撤销所有语音播放 URL。 */
+function clearVoiceMessages() {
+  for (const message of messages.value) {
+    if (message.voiceUrl) URL.revokeObjectURL(message.voiceUrl)
+  }
+}
+
+/** 仅显式点击后请求麦克风；录完留在本地预览，不自动发送。 */
+async function startVoice() {
+  if (!voiceSupported || !thread.value || blocked.value || voicePhase.value !== 'idle' || sending.value) return
+  const version = ++voiceVersion
+  voicePhase.value = 'requesting'
+  error.value = ''
+  try {
+    const mimeType = voiceMimeTypes.find(type => MediaRecorder.isTypeSupported(type))
+    if (!mimeType) throw new Error('当前浏览器不支持录音格式')
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    if (disposed || version !== voiceVersion || blocked.value) {
+      stream.getTracks().forEach(track => track.stop())
+      return
+    }
+    microphone = stream
+    const current = new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 32000 })
+    recorder = current
+    let chunks = []
+    let size = 0
+    const startedAt = Date.now()
+    let duration = 0
+    current.ondataavailable = event => {
+      if (disposed || version !== voiceVersion || !event.data.size) return
+      size += event.data.size
+      if (size > maxVoiceBytes) {
+        cancelVoice()
+        error.value = '语音超过512 KiB，请缩短录制'
+        return
+      }
+      chunks.push(event.data)
+    }
+    current.onerror = () => {
+      if (version !== voiceVersion) return
+      cancelVoice()
+      error.value = '录音失败，请重试'
+    }
+    current.onstop = () => {
+      if (disposed || version !== voiceVersion) return
+      duration = duration || Math.min(maxVoiceDuration, Math.max(1, Date.now() - startedAt))
+      releaseMicrophone()
+      recorder = null
+      if (blocked.value) { cancelVoice(); return }
+      const blob = new Blob(chunks, { type: current.mimeType })
+      chunks = []
+      if (!blob.size || blob.size > maxVoiceBytes || !voiceMimeTypes.includes(blob.type)) {
+        cancelVoice()
+        error.value = '录音为空或格式无效，请重试'
+        return
+      }
+      voiceBlob = blob
+      voiceDuration.value = duration
+      voicePreview.value = URL.createObjectURL(blob)
+      voicePhase.value = 'ready'
+    }
+    // 在stop调用时冻结录制时长，避免异步回调延迟计入语音时长。
+    current.stopRecording = () => {
+      if (current.state !== 'recording') return
+      duration = Math.min(maxVoiceDuration, Math.max(1, Date.now() - startedAt))
+      voicePhase.value = 'processing'
+      current.stop()
+      releaseMicrophone()
+    }
+    current.start(250)
+    voicePhase.value = 'recording'
+    voiceTimer = setTimeout(stopVoice, maxVoiceDuration)
+  } catch (cause) {
+    if (disposed || version !== voiceVersion) return
+    cancelVoice()
+    error.value = cause.name === 'NotAllowedError' ? '请允许使用麦克风' : '无法录音，请检查麦克风与浏览器支持'
+  }
+}
+
+/** 停止录音并等待最后一块音频，麦克风立即释放。 */
+function stopVoice() {
+  recorder?.stopRecording()
+}
+
+/** 仅提交明文音频载荷；发送失败保留草稿，切换好友后丢弃旧结果。 */
+async function sendVoice() {
+  if (voicePhase.value !== 'ready' || !voiceBlob || sending.value || blocked.value || !thread.value) return
+  const version = generation
+  const voice = voiceVersion
+  const threadId = thread.value.id
+  sending.value = true
+  error.value = ''
+  try {
+    const payload = await encodeDmVoice(voiceBlob, voiceDuration.value)
+    if (!current(version) || voice !== voiceVersion || blocked.value) return
+    const message = await sendDmMessage(threadId, payload)
+    if (!current(version) || voice !== voiceVersion || blocked.value) return
+    await mergeMessages([message], true)
+    if (current(version) && voice === voiceVersion) cancelVoice()
+  } catch (cause) {
+    if (current(version) && voice === voiceVersion) showError(cause)
+  } finally {
+    if (current(version)) sending.value = false
+  }
+}
+
+/** 登录变化时立即清理录音与消息，防止旧账号异步请求继续进入页面。 */
+function clearLoginMedia() {
+  ++generation
+  ++historyVersion
+  blocked.value = true
+  cancelVoice()
+  clearVoiceMessages()
+  messages.value = []
+  socket?.close()
+}
+
+/** 其他标签页退出或换账号时，同步释放麦克风与本地音频。 */
+function handleStorage(event) {
+  if (event.key === 'mairy.auth.token' || event.key === null) clearLoginMedia()
+}
+window.addEventListener('mairy:lock-keys', clearLoginMedia)
+window.addEventListener('storage', handleStorage)
+
 /** 忽略切换好友或离开页面后返回的异步结果。 */
 function current(version) {
   return !disposed && version === generation
 }
 
-/** 通过主键去重合并 REST 与推送，并按主键升序显示。 */
+/** 校验明文语音后生成本地 URL，按主键去重合并 REST 与推送。 */
 async function mergeMessages(records, scroll = false) {
   const byId = new Map(messages.value.map(message => [message.id, message]))
-  for (const message of records) byId.set(message.id, message)
+  for (const record of records) {
+    const previous = byId.get(record.id)
+    if (previous?.voiceUrl) URL.revokeObjectURL(previous.voiceUrl)
+    // 绝不直接采用网络传入的播放 URL 或 Blob。
+    const { voiceUrl, voice, ...message } = record
+    if (message.kind === 'voice') {
+      try { message.voiceUrl = URL.createObjectURL(readDmVoice(message)) }
+      catch { message.voiceError = '语音数据无效，无法播放' }
+    }
+    byId.set(message.id, message)
+  }
   messages.value = [...byId.values()].sort((a, b) => BigInt(a.id) < BigInt(b.id) ? -1 : 1)
   if (scroll) {
     await nextTick()
@@ -48,6 +216,8 @@ function showError(cause) {
     ++historyVersion
     refreshing.value = false
     loadingOlder.value = false
+    cancelVoice()
+    clearVoiceMessages()
     messages.value = []
     status.value = '私信不可用'
     socket?.close()
@@ -61,6 +231,7 @@ async function refreshHistory() {
   const history = ++historyVersion
   refreshing.value = true
   error.value = ''
+  clearVoiceMessages()
   messages.value = []
   hasMore.value = false
   nextBeforeId.value = null
@@ -149,7 +320,7 @@ function connect() {
 /** 保存明文私信并保留发送期间新增的草稿。 */
 async function handleSend() {
   const content = draft.value.trim()
-  if (!thread.value || !content || sending.value || blocked.value) return
+  if (!thread.value || !content || sending.value || blocked.value || voicePhase.value !== 'idle') return
   const version = generation
   sending.value = true
   error.value = ''
@@ -181,6 +352,8 @@ function formatTime(value) {
 /** 切换好友时释放旧连接与状态，接口成功后再加载私信。 */
 async function start(userId) {
   const version = ++generation
+  cancelVoice()
+  clearVoiceMessages()
   socket?.close()
   socket = null
   ++historyVersion
@@ -216,6 +389,10 @@ watch(() => route.params.userId, start, { immediate: true })
 onBeforeUnmount(() => {
   disposed = true
   ++generation
+  cancelVoice()
+  clearVoiceMessages()
+  window.removeEventListener('mairy:lock-keys', clearLoginMedia)
+  window.removeEventListener('storage', handleStorage)
   socket?.close()
 })
 </script>
@@ -243,13 +420,34 @@ onBeforeUnmount(() => {
         <article v-for="message in messages" :key="message.id" class="message" :class="{ own: message.senderId === auth.user?.id }">
           <div class="message-meta"><strong>{{ message.senderId === auth.user?.id ? '我' : thread.peer.nickname }}</strong><time>{{ formatTime(message.createdAt) }}</time></div>
           <!-- 文本插值避免将好友输入渲染为 HTML。 -->
-          <p class="message-bubble">{{ message.content }}</p>
+          <div v-if="message.kind === 'voice'" class="message-bubble voice-message">
+            <template v-if="message.voiceUrl">
+              <span>语音 · {{ Math.ceil(message.duration / 1000) }}秒</span>
+              <audio :src="message.voiceUrl" controls preload="none" aria-label="私信语音消息"
+                @error="error = '当前浏览器无法播放此语音'"></audio>
+            </template>
+            <span v-else>{{ message.voiceError }}</span>
+          </div>
+          <p v-else class="message-bubble">{{ message.content }}</p>
         </article>
       </div>
       <form class="composer" @submit.prevent="handleSend">
         <label for="dm-content">发给 {{ thread.peer.nickname }}</label>
         <textarea id="dm-content" v-model="draft" maxlength="1000" rows="3" :disabled="blocked" placeholder="说点什么…" required @keydown="handleEnter"></textarea>
-        <div class="composer-footer"><span class="muted">{{ draft.length }} / 1000 · Enter发送 · Shift+Enter换行</span><button :disabled="sending || blocked || !draft.trim()">{{ sending ? '发送中…' : '发送' }}</button></div>
+        <!-- 语音只保存在本地，点击发送时明文上传。 -->
+        <div class="voice-tools">
+          <button v-if="voicePhase === 'idle'" type="button" class="secondary"
+            :disabled="!voiceSupported || sending || blocked" @click="startVoice">录语音</button>
+          <button v-if="voicePhase === 'recording'" type="button" @click="stopVoice">结束录音</button>
+          <span class="muted" role="status">{{ voicePhase === 'requesting' ? '请允许使用麦克风' : voicePhase === 'recording' ? '录音中，最多60秒' : voicePhase === 'processing' ? '正在处理录音…' : !voiceSupported ? '录音需HTTPS或localhost及浏览器支持' : '最多60秒 · 512 KiB' }}</span>
+          <button v-if="voicePhase !== 'idle'" type="button" class="secondary" :disabled="sending" @click="cancelVoice">取消语音</button>
+        </div>
+        <div v-if="voicePreview" class="voice-tools">
+          <audio :src="voicePreview" controls preload="metadata" aria-label="待发送语音预览" @error="error = '当前浏览器无法播放此语音'"></audio>
+          <span class="muted">{{ Math.ceil(voiceDuration / 1000) }}秒 · 仅本地预览</span>
+          <button type="button" :disabled="sending || blocked" @click="sendVoice">{{ sending ? '发送中…' : '发送语音' }}</button>
+        </div>
+        <div class="composer-footer"><span class="muted">{{ draft.length }} / 1000 · Enter发送 · Shift+Enter换行</span><button :disabled="voicePhase !== 'idle' || sending || blocked || !draft.trim()">{{ sending ? '发送中…' : '发送' }}</button></div>
       </form>
     </template>
   </section>
@@ -259,4 +457,9 @@ onBeforeUnmount(() => {
 /* 复用项目现有聊天面板，仅补充私信页按钮的窄屏排列。 */
 .dm-panel .button-link { flex-shrink: 0; }
 .dm-panel .chat-tools { flex-wrap: wrap; }
+/* 原生音频与录制按钮沿用纸卡样式，小屏自动换行。 */
+.voice-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.voice-tools button { min-height: 44px; }
+.voice-tools audio, .voice-message audio { width: min(280px, 100%); max-width: 100%; }
+.voice-message { display: grid; gap: 8px; min-width: 0; }
 </style>

@@ -140,6 +140,8 @@ class DmIntegrationTest {
             assertEquals(first.path("id"), older.path("records").get(0).path("id"));
             assertFalse(older.path("hasMore").asBoolean());
 
+            verifyVoiceMessages(path, own, peer, outsider);
+
             // 即使会话早已建立，关系变更后仍禁止历史、发送及会话列表。
             jdbc.update("UPDATE chat_friend_request SET status='REJECTED' WHERE id=?", relation);
             mvc.perform(body(get(path), bob, null)).andExpect(status().isForbidden());
@@ -164,6 +166,101 @@ class DmIntegrationTest {
             sockets.afterConnectionClosed(own, CloseStatus.NORMAL);
             sockets.afterConnectionClosed(peer, CloseStatus.NORMAL);
             sockets.afterConnectionClosed(outsider, CloseStatus.NORMAL);
+        }
+    }
+
+    /** 最大明文语音经过真实 REST、数据库、历史和双方推送，非法载荷不入库。 */
+    private void verifyVoiceMessages(String path, WebSocketSession own, WebSocketSession peer,
+                                     WebSocketSession outsider) throws Exception {
+        clearInvocations(own, peer);
+        String audio = java.util.Base64.getEncoder().encodeToString(new byte[512 * 1024]);
+        Map<String, Object> valid = Map.of("kind", "voice", "mime", "audio/webm", "duration", 60000,
+                "content", audio, "enc", 1, "iv", "ignored");
+        JsonNode sent = call(post(path), alice, valid);
+        assertEquals("voice", sent.path("kind").asText());
+        assertEquals("audio/webm", sent.path("mime").asText());
+        assertEquals(60000, sent.path("duration").asInt());
+        assertEquals(0, sent.path("enc").asInt());
+        assertTrue(sent.path("iv").isNull());
+        long messageId = sent.path("id").asLong();
+        assertEquals(audio, jdbc.queryForObject("SELECT content FROM chat_dm_message WHERE id=?", String.class, messageId));
+        assertEquals(0, jdbc.queryForObject("SELECT enc FROM chat_dm_message WHERE id=?", Integer.class, messageId));
+        assertNull(jdbc.queryForObject("SELECT iv FROM chat_dm_message WHERE id=?", String.class, messageId));
+        // 数据库 DATETIME 精度与即时回包可能不同，分别核对正文、元数据与时间范围。
+        JsonNode historical = call(get(path + "?size=1"), bob, null).path("records").get(0);
+        for (String field : java.util.List.of("id", "threadId", "senderId", "content", "kind", "mime", "duration", "enc", "iv")) {
+            assertTrue(sent.path(field).equals(historical.path(field)), "历史字段不一致: " + field);
+        }
+        assertTrue(java.time.Duration.between(java.time.LocalDateTime.parse(sent.path("createdAt").asText()),
+                java.time.LocalDateTime.parse(historical.path("createdAt").asText())).abs().toMillis() < 1);
+        ArgumentCaptor<TextMessage> payload = ArgumentCaptor.forClass(TextMessage.class);
+        verify(own).sendMessage(payload.capture());
+        assertEquals(sent, json.readTree(payload.getValue().getPayload()).path("data"));
+        verify(peer).sendMessage(any());
+        verify(outsider, never()).sendMessage(any());
+        mvc.perform(body(post(path), carol, valid)).andExpect(status().isForbidden());
+
+        int count = jdbc.queryForObject("SELECT COUNT(*) FROM chat_dm_message", Integer.class);
+        for (Map<String, Object> changes : java.util.List.<Map<String, Object>>of(
+                Map.of("kind", "other"), Map.of("mime", "text/html"), Map.of("mime", ""),
+                Map.of("duration", 0), Map.of("duration", 60001), Map.of("duration", 1.5),
+                Map.of("content", ""), Map.of("content", "Kg"), Map.of("content", "Kh=="),
+                Map.of("content", "Kg==\n"), Map.of("content", "not base64"),
+                Map.of("content", java.util.Base64.getEncoder().encodeToString(new byte[512 * 1024 + 1])),
+                Map.of("content", "A".repeat(699056)))) {
+            Map<String, Object> invalid = new HashMap<>(valid);
+            invalid.putAll(changes);
+            mvc.perform(body(post(path), alice, invalid)).andExpect(status().isBadRequest());
+        }
+        for (String field : java.util.List.of("mime", "duration")) {
+            Map<String, Object> invalid = new HashMap<>(valid);
+            invalid.remove(field);
+            mvc.perform(body(post(path), alice, invalid)).andExpect(status().isBadRequest());
+        }
+        mvc.perform(body(post(path), alice, Map.of("content", "文字", "mime", "audio/webm")))
+                .andExpect(status().isBadRequest());
+        mvc.perform(body(post(path), alice, Map.of("content", "文字", "duration", 1)))
+                .andExpect(status().isBadRequest());
+        assertEquals(count, jdbc.queryForObject("SELECT COUNT(*) FROM chat_dm_message", Integer.class));
+        JsonNode minimal = call(post(path), bob, Map.of("kind", "voice", "content", "Kg==",
+                "mime", "audio/ogg;codecs=opus", "duration", 1));
+        assertEquals(1, minimal.path("duration").asInt());
+        JsonNode text = call(post(path), bob, Map.of("content", "兼容原文字"));
+        assertEquals("text", text.path("kind").asText());
+        assertTrue(text.path("mime").isNull());
+        assertTrue(text.path("duration").isNull());
+    }
+
+    /** 以 H2 兼容语法执行正式升级定义，验证旧文字与明文约束保留。 */
+    @Test
+    void voiceMigrationPreservesPlaintextHistory() throws Exception {
+        try (var connection = java.sql.DriverManager.getConnection(
+                "jdbc:h2:mem:dm_voice_migration;MODE=MySQL;DATABASE_TO_LOWER=TRUE", "sa", "");
+             var statement = connection.createStatement()) {
+            statement.execute("CREATE TABLE chat_dm_message(id BIGINT PRIMARY KEY, content VARCHAR(1000) NOT NULL,"
+                    + "enc TINYINT NOT NULL DEFAULT 0, iv VARCHAR(16) NULL, CHECK(enc=0 AND iv IS NULL))");
+            statement.execute("INSERT INTO chat_dm_message(id,content) VALUES(1,'旧文字')");
+            String sql = new ClassPathResource("schema-upgrade-20261106-dm-voice.sql")
+                    .getContentAsString(StandardCharsets.UTF_8).replace("USE mairy_chat;", "")
+                    // H2 不支持 MySQL 的多操作 ALTER；仅测试路径拆分语句并移除列位置。
+                    .replaceAll(",\\s+ADD COLUMN", "; ALTER TABLE chat_dm_message ADD COLUMN")
+                    .replaceAll("(?i)\\s+AFTER\\s+\\w+", "");
+            org.springframework.jdbc.datasource.init.ScriptUtils.executeSqlScript(connection,
+                    new org.springframework.core.io.support.EncodedResource(
+                            new org.springframework.core.io.ByteArrayResource(sql.getBytes(StandardCharsets.UTF_8)), StandardCharsets.UTF_8));
+            try (var rows = statement.executeQuery("SELECT * FROM chat_dm_message WHERE id=1")) {
+                assertTrue(rows.next());
+                assertEquals("旧文字", rows.getString("content"));
+                assertEquals("text", rows.getString("kind"));
+                assertNull(rows.getObject("mime"));
+                assertNull(rows.getObject("duration"));
+            }
+            statement.execute("INSERT INTO chat_dm_message(id,content,kind,mime,duration) VALUES(2,'"
+                    + "A".repeat(699052) + "','voice','audio/webm',60000)");
+            assertThrows(java.sql.SQLException.class,
+                    () -> statement.execute("UPDATE chat_dm_message SET enc=1 WHERE id=2"));
+            assertThrows(java.sql.SQLException.class,
+                    () -> statement.execute("UPDATE chat_dm_message SET iv='room-iv' WHERE id=2"));
         }
     }
 
@@ -194,7 +291,7 @@ class DmIntegrationTest {
         assertTrue(auth.activeSessionIds(java.util.Set.of()).isEmpty());
     }
 
-    /** 将 MySQL 建表脚本转换为与既有测试一致的 H2 兼容语法。 */
+    /** 将 MySQL 建表脚本转为 H2 兼容语法，并显式以 UTF-8 读取中文。 */
     private void runSchema(String resource) throws Exception {
         String sql = new ClassPathResource(resource).getContentAsString(StandardCharsets.UTF_8)
                 .replaceAll("(?m)^--.*$", "")
@@ -202,7 +299,8 @@ class DmIntegrationTest {
                 .replace(" STORED", "").replaceAll("(?i)\\) ENGINE=InnoDB[^;]*;", ");");
         try (var connection = jdbc.getDataSource().getConnection()) {
             org.springframework.jdbc.datasource.init.ScriptUtils.executeSqlScript(connection,
-                    new org.springframework.core.io.ByteArrayResource(sql.getBytes(StandardCharsets.UTF_8)));
+                    new org.springframework.core.io.support.EncodedResource(
+                            new org.springframework.core.io.ByteArrayResource(sql.getBytes(StandardCharsets.UTF_8)), StandardCharsets.UTF_8));
         }
     }
 

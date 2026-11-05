@@ -1,6 +1,6 @@
 # Mairy Chat 架构说明
 
-本文描述当前仓库实现；核对日期：2026-11-04。功能边界以代码为准，既有 NOTES 保留对应阶段的实现与验收记录。
+本文描述当前仓库实现；核对日期：2026-11-06。功能边界以代码为准，既有 NOTES 保留对应阶段的实现与验收记录。
 
 **凡影响结构 / API / 功能行为的代码改动，必须在同一次提交（或同一 PR）里同步更新本文。** 修改前先阅读本文；涉及认证、加密、数据库或部署时，同时核对下文链接的专项说明。
 
@@ -39,6 +39,7 @@
 | `frontend/src/api/chat.js` | fetch 封装、房间与私信 API、两种 WebSocket 连接 |
 | `frontend/src/auth.js` | Vue reactive 登录状态、localStorage 凭证、浏览器指纹；没有独立 `stores/` 目录或 Pinia |
 | `frontend/src/crypto/e2ee.js` | 设备身份、加密保险箱、密钥信封、消息加解密与备份恢复 |
+| `frontend/src/media/dm-voice.js` | 私信明文音频 Base64 编解码与格式、大小、时长校验；不依赖 Web Crypto |
 | `frontend/src/App.vue`、`style.css` | 应用外壳、退出入口和样式 |
 | `deploy/` | Dockerfile、Compose、nginx 路径片段及部署说明 |
 | `docs/` | 本文与现有设计参考资料；设计图片不表示已实现功能 |
@@ -152,10 +153,12 @@ localStorage 存储 Bearer 有 XSS 风险；WS 查询参数可能进入代理日
 | POST `/api/friends/requests/{id}?accept=true或false` | 仅接收方可处理待办申请 |
 | POST `/api/dm/with/{userId}` | 为已接受好友获取或创建唯一私信会话 |
 | GET `/api/dm/threads` | 本人仍有权限的最近 200 个会话，按会话主键倒序 |
-| GET / POST `/api/dm/threads/{threadId}/messages` | 游标历史 / 发送 `{content}`；历史 size 默认 30、范围 1～50；正文最多 1000 字符 |
+| GET / POST `/api/dm/threads/{threadId}/messages` | 游标历史 / 发送文字 `{content,kind?:'text'}` 或语音 `{content,kind:'voice',mime,duration}`；历史 size 默认 30、范围 1～50；文字最多 1000 字符 |
 | WS `/ws/dm?token=登录Bearer` | 以登录账号索引连接，只向会话双方有效登录推送 `type=dm-message`；非浏览器客户端也可用 Authorization 握手 |
 
 **私信当前是明文：`enc=0`、`iv=NULL`，服务端和数据库能够读取正文。房间 E2EE 不覆盖 DM。** 私信独立使用 `chat_dm_thread` / `chat_dm_message`，REST 只要 Bearer，不使用进房 Token、房间密钥或 Web Crypto；页面有明文提示。已有账号可在普通 HTTP 环境登录私信，但 HTTP 本身不加密传输，仍应使用 HTTPS / WSS。
+
+`DmChatView` 支持录音、结束后本地预览、显式发送及历史 / 推送播放；录音要求 HTTPS / localhost、MediaRecorder、getUserMedia 和麦克风权限，普通 HTTP 仍可收发文字及播放收到的语音。语音 `content` 为规范 Base64，原始音频限 1～524288 字节，`duration` 为 1～60000 整数毫秒，`mime` 仅允许 WebM / Ogg（可带 `codecs=opus`）或 `audio/mp4`；前后端分别校验。录满 60 秒自动停止，失败保留草稿可重试；取消、切换好友、权限失效、退出及卸载释放麦克风、定时器和 Blob URL，版本号拒绝迟到结果。播放 URL 仅由校验后的本地 Blob 生成，不接受网络传入的播放地址，不自动播放或预加载历史音频。私信 WS 缓冲上限 1 MiB、发送时限 5 秒，可容纳单条语音；房间语音与助手保持原流程。
 
 每次打开、历史读取与发信都校验会话参与人、已接受好友关系及对方可用状态；服务端根据登录确定发送人。事务内发布 `DmMessageSent`，由 `DmSocketHandler` 提交后推送；推送前一次批量检查登录，发送循环不查 SQL。前端只合并当前 threadId 的事件，并在切换好友、卸载或权限失效时丢弃旧异步结果。
 
@@ -192,7 +195,7 @@ localStorage 存储 Bearer 有 XSS 风险；WS 查询参数可能进入代理日
 
 ### 房间语音
 
-仅 `ChatRoomView` 使用 `getUserMedia` / `MediaRecorder` 录音，支持浏览器可录制的 WebM / Ogg Opus 或 MP4，目标码率 32 kbps。录完先本地预览，点击「发送语音」才加密上传；录制到 60 秒自动停止，超过 512 KiB 则丢弃并提示，失败保留草稿可重试。需要 HTTPS / localhost、麦克风权限及已解锁并核验的房间密钥，无明文回退。
+房间语音由 `ChatRoomView` 使用 `getUserMedia` / `MediaRecorder` 录制，支持浏览器可录制的 WebM / Ogg Opus 或 MP4，目标码率 32 kbps。录完先本地预览，点击「发送语音」才加密上传；录制到 60 秒自动停止，超过 512 KiB 则丢弃并提示，失败保留草稿可重试。需要 HTTPS / localhost、麦克风权限及已解锁并核验的房间密钥，无明文回退。
 
 `e2ee.js` 将 `{version:1,mime,duration,data}`（data 为音频 Base64，duration 为毫秒）作为 UTF-8 JSON，用既有房间 AES-GCM 密钥与新随机 IV 加密。语音 AAD 为 `mairy:e2ee:v1:message:<roomId>:member:<memberId>:kind:voice`；文字沿用原 AAD，因此无法将语音密文改标为文字播放。外部字段只有 `kind=voice`、enc / iv / content，音频格式、时长及字节均在密文内；服务端仍可见消息类型、长度与原有元数据。
 
@@ -226,9 +229,10 @@ API 与 WS 握手按直连 IP 合计每分钟 240 次；登录每 15 分钟 20 �
 | [schema-upgrade-e2ee.sql](../backend/src/main/resources/schema-upgrade-e2ee.sql) | 已有账号库增加消息 enc / iv、扩大 content、新增公钥 / 信封表；旧行保持 `enc=0`、iv 为 NULL；含 ALTER，只执行一次 |
 | [schema-upgrade-dm.sql](../backend/src/main/resources/schema-upgrade-dm.sql) | 已有账号库新增私信会话 / 消息表；仅 CREATE TABLE IF NOT EXISTS，可重复执行，不改房间消息 |
 | [schema-upgrade-voice.sql](../backend/src/main/resources/schema-upgrade-voice.sql) | 已有房间 E2EE 库扩大 chat_message.content 为 MEDIUMTEXT，新增 kind 默认 text；含 ALTER，仅执行一次，不改 DM / 助手表 |
+| [schema-upgrade-20261106-dm-voice.sql](../backend/src/main/resources/schema-upgrade-20261106-dm-voice.sql) | 已有 DM 库扩大 chat_dm_message.content 为 MEDIUMTEXT，新增 kind（默认 text）、mime、duration；保留 enc=0 / iv=NULL 约束；含 MySQL ALTER，仅执行一次 |
 | [data-local.sql](../backend/src/main/resources/data-local.sql) | 仅本地管理员种子；不存在用户名 / 编号时才插入，不覆盖已改密码，不占浏览器注册配额 |
 
-选择路径：全新库执行 `schema.sql → data-local.sql`；旧匿名库按 `schema-upgrade-auth.sql → schema-upgrade-e2ee.sql → schema-upgrade-dm.sql → schema-upgrade-voice.sql` 补齐，再按需导入本地种子；已经具备部分功能的账号库只执行尚未应用的对应脚本。执行前备份并确认结构，不要在新库重复执行 ALTER，也不要把全量 schema 当作旧库升级。
+选择路径：全新库执行 `schema.sql → data-local.sql`；旧匿名库按 `schema-upgrade-auth.sql → schema-upgrade-e2ee.sql → schema-upgrade-dm.sql → schema-upgrade-voice.sql → schema-upgrade-20261106-dm-voice.sql` 补齐，再按需导入本地种子；已经具备部分功能的账号库只执行尚未应用的对应脚本。执行前备份并确认结构，不要在新库重复执行 ALTER，也不要把全量 schema 当作旧库升级。
 
 | 表组 | 表及关键约束 |
 | --- | --- |
@@ -237,9 +241,9 @@ API 与 WS 握手按直连 IP 合计每分钟 240 次；登录每 15 分钟 20 �
 | 好友 | `chat_friend_request`，生成列 pair_low / pair_high 的用户对唯一；拒绝后关系仍保留 |
 | 房间 | `chat_room`（房主唯一，旧房间可为空）、`chat_member`（登录绑定进房会话）、`chat_message`（room_id / id 游标索引、room_id / iv 唯一） |
 | E2EE | `chat_user_pubkey`（账号唯一公钥）、`chat_room_key_wrap`（房间 / 收件账号唯一） |
-| 私信 | `chat_dm_thread`（有序用户对唯一）、`chat_dm_message`（thread_id / id 索引，CHECK 固定 enc=0 且 iv 为 NULL） |
+| 私信 | `chat_dm_thread`（有序用户对唯一）、`chat_dm_message`（MEDIUMTEXT 明文文字 / 音频 Base64、kind / mime / duration、thread_id / id 索引，CHECK 固定 enc=0 且 iv 为 NULL） |
 
-旧库迁移保留房间、成员及历史，不自动指定旧房间房主，不追溯加密。H2 测试不能替代 MySQL 实际 DDL、字符集和迁移验证。
+旧库迁移保留房间、成员及历史，不自动指定旧房间房主，不追溯加密。DM 语音迁移测试读取正式升级定义，仅在测试路径将多操作 ALTER 拆成 H2 可执行语句并去掉列位置，保留历史文字、默认类型及明文约束验证；中文 SQL 显式以 UTF-8 执行。H2 测试不能替代 MySQL 实际 DDL、字符集和迁移验证。
 
 ## 11. 部署路径与现有配置
 

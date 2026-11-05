@@ -36,7 +36,7 @@ public class DmSocketHandler extends TextWebSocketHandler {
     private final AuthService auth;
     private final Map<Long, Map<String, WebSocketSession>> users = new ConcurrentHashMap<>();
 
-    /** 登记前再次验证登录，与撤销事件共用锁以封住握手竞态。 */
+    /** 登记前复核登录；1 MiB 慢连接缓冲容纳单条语音，仍限制发送5秒。 */
     @Override
     public synchronized void afterConnectionEstablished(WebSocketSession session) {
         AuthIdentity identity = identity(session);
@@ -46,7 +46,7 @@ public class DmSocketHandler extends TextWebSocketHandler {
             disconnect(session);
             return;
         }
-        WebSocketSession safeSession = new ConcurrentWebSocketSessionDecorator(session, 5000, 65536);
+        WebSocketSession safeSession = new ConcurrentWebSocketSessionDecorator(session, 5000, 1024 * 1024);
         users.computeIfAbsent(identity.user().getId(), id -> new ConcurrentHashMap<>())
                 .put(session.getId(), safeSession);
     }

@@ -88,9 +88,9 @@ export function listDmMessages(threadId, beforeId) {
   return request('/dm/threads/' + threadId + '/messages?' + query)
 }
 
-/** 私信 v1 发送明文，由服务端固定 enc=0 并确定发送人。 */
+/** 私信发送文字或明文语音，由服务端固定 enc=0 并确定发送人。 */
 export function sendDmMessage(threadId, content) {
-  return request('/dm/threads/' + threadId + '/messages', { method: 'POST', body: { content } })
+  return request('/dm/threads/' + threadId + '/messages', { method: 'POST', body: typeof content === 'string' ? { content } : content })
 }
 
 /** 从房间同源路径推导私信端点，兼容 /chat 前缀；使用登录凭证。 */

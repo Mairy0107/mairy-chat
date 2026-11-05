@@ -10,6 +10,6 @@ public final class DmViews {
 
     public record ThreadView(String id, AuthViews.UserView peer, LocalDateTime createdAt) { }
     public record MessageView(String id, String threadId, String senderId, String content,
-                              int enc, String iv, LocalDateTime createdAt) { }
+                              int enc, String iv, LocalDateTime createdAt, String kind, String mime, Integer duration) { }
     public record MessagePage(List<MessageView> records, String nextBeforeId, boolean hasMore) { }
 }
