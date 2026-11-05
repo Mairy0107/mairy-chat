@@ -79,7 +79,10 @@ async function submit() {
       notice.value = result.message
     }
   } catch (cause) {
-    error.value = cause.message
+    // 保留服务端中文业务提示，避免向用户展示原始浏览器异常。
+    error.value = /[\u4e00-\u9fff]/.test(cause?.message || '') ? cause.message
+      : cause?.name === 'SecurityError' ? '浏览器存储不可用，请允许本站使用本地存储后重试'
+        : '操作未完成，请刷新页面后重试或检查网络连接'
   } finally {
     busy.value = false
   }
