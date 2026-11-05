@@ -399,20 +399,23 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="panel chat-panel dm-panel">
-    <div class="section-heading">
-      <!-- 私信沿用房间的纸卡标题，仅以短标签区分会话。 -->
-      <div class="chat-identity"><span class="paper-mark" aria-hidden="true"></span><div><span class="room-label">私信</span><h2>{{ thread?.peer.nickname || '私信' }}</h2><p v-if="thread" class="muted">{{ thread.peer.publicNo }} · <span role="status">{{ status }}</span></p></div></div>
-      <RouterLink class="button-link secondary" to="/app">返回大厅</RouterLink>
-    </div>
-    <p class="notice dm-privacy">私信未加密，服务器可读取内容。</p>
-    <p v-if="error" class="error" role="alert">{{ error }}</p>
-    <p v-if="opening" class="empty">正在打开私信…</p>
-    <button v-if="!opening && !thread && !blocked" class="secondary" @click="start(route.params.userId)">重试</button>
-    <template v-if="thread">
-      <div class="chat-tools">
+    <!-- 顶部信息在短屏内独立滚动，为消息和发送栏保留空间。 -->
+    <div class="chat-context">
+      <div class="section-heading">
+        <!-- 私信沿用房间的纸卡标题，仅以短标签区分会话。 -->
+        <div class="chat-identity"><span class="paper-mark" aria-hidden="true"></span><div><span class="room-label">私信</span><h2>{{ thread?.peer.nickname || '私信' }}</h2><p v-if="thread" class="muted">{{ thread.peer.publicNo }} · <span role="status">{{ status }}</span></p></div></div>
+        <RouterLink class="button-link secondary" to="/app">返回大厅</RouterLink>
+      </div>
+      <p class="notice dm-privacy">私信未加密，服务器可读取内容。</p>
+      <p v-if="error" class="error" role="alert">{{ error }}</p>
+      <p v-if="opening" class="empty">正在打开私信…</p>
+      <button v-if="!opening && !thread && !blocked" class="secondary" @click="start(route.params.userId)">重试</button>
+      <div v-if="thread" class="chat-tools">
         <button class="secondary" :disabled="refreshing || loadingOlder || blocked" @click="refreshHistory">刷新消息</button>
         <button v-if="status === '实时连接已断开'" class="secondary" :disabled="blocked" @click="connect">重新连接</button>
       </div>
+    </div>
+    <template v-if="thread">
       <div ref="messageList" class="message-list" role="log" aria-label="私信消息" aria-live="polite">
         <button v-if="hasMore && !blocked" class="secondary load-more" :disabled="loadingOlder || refreshing" @click="loadOlder">{{ loadingOlder ? '加载中…' : '加载更早消息' }}</button>
         <p v-if="refreshing" class="empty">正在加载消息…</p>
@@ -432,20 +435,23 @@ onBeforeUnmount(() => {
         </article>
       </div>
       <form class="composer" @submit.prevent="handleSend">
-        <label for="dm-content">发给 {{ thread.peer.nickname }}</label>
-        <textarea id="dm-content" v-model="draft" maxlength="1000" rows="3" :disabled="blocked" placeholder="说点什么…" required @keydown="handleEnter"></textarea>
-        <!-- 语音只保存在本地，点击发送时明文上传。 -->
-        <div class="voice-tools">
-          <button v-if="voicePhase === 'idle'" type="button" class="secondary"
-            :disabled="!voiceSupported || sending || blocked" @click="startVoice">录语音</button>
-          <button v-if="voicePhase === 'recording'" type="button" @click="stopVoice">结束录音</button>
-          <span class="muted" role="status">{{ voicePhase === 'requesting' ? '请允许使用麦克风' : voicePhase === 'recording' ? '录音中，最多60秒' : voicePhase === 'processing' ? '正在处理录音…' : !voiceSupported ? '录音需HTTPS或localhost及浏览器支持' : '最多60秒 · 512 KiB' }}</span>
-          <button v-if="voicePhase !== 'idle'" type="button" class="secondary" :disabled="sending" @click="cancelVoice">取消语音</button>
-        </div>
-        <div v-if="voicePreview" class="voice-tools">
-          <audio :src="voicePreview" controls preload="metadata" aria-label="待发送语音预览" @error="error = '当前浏览器无法播放此语音'"></audio>
-          <span class="muted">{{ Math.ceil(voiceDuration / 1000) }}秒 · 仅本地预览</span>
-          <button type="button" :disabled="sending || blocked" @click="sendVoice">{{ sending ? '发送中…' : '发送语音' }}</button>
+        <!-- 输入及语音内容可内部滚动，发送栏始终留在底部。 -->
+        <div class="composer-body">
+          <label for="dm-content">发给 {{ thread.peer.nickname }}</label>
+          <textarea id="dm-content" v-model="draft" maxlength="1000" rows="3" :disabled="blocked" placeholder="说点什么…" required @keydown="handleEnter"></textarea>
+          <!-- 语音只保存在本地，点击发送时明文上传。 -->
+          <div class="voice-tools">
+            <button v-if="voicePhase === 'idle'" type="button" class="secondary"
+              :disabled="!voiceSupported || sending || blocked" @click="startVoice">录语音</button>
+            <button v-if="voicePhase === 'recording'" type="button" @click="stopVoice">结束录音</button>
+            <span class="muted" role="status">{{ voicePhase === 'requesting' ? '请允许使用麦克风' : voicePhase === 'recording' ? '录音中，最多60秒' : voicePhase === 'processing' ? '正在处理录音…' : !voiceSupported ? '录音需HTTPS或localhost及浏览器支持' : '最多60秒 · 512 KiB' }}</span>
+            <button v-if="voicePhase !== 'idle'" type="button" class="secondary" :disabled="sending" @click="cancelVoice">取消语音</button>
+          </div>
+          <div v-if="voicePreview" class="voice-tools">
+            <audio :src="voicePreview" controls preload="metadata" aria-label="待发送语音预览" @error="error = '当前浏览器无法播放此语音'"></audio>
+            <span class="muted">{{ Math.ceil(voiceDuration / 1000) }}秒 · 仅本地预览</span>
+            <button type="button" :disabled="sending || blocked" @click="sendVoice">{{ sending ? '发送中…' : '发送语音' }}</button>
+          </div>
         </div>
         <div class="composer-footer"><span class="muted">{{ draft.length }} / 1000 · Enter发送 · Shift+Enter换行</span><button :disabled="voicePhase !== 'idle' || sending || blocked || !draft.trim()">{{ sending ? '发送中…' : '发送' }}</button></div>
       </form>

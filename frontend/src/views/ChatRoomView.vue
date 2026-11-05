@@ -491,86 +491,89 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="panel chat-panel">
-    <div class="section-heading">
-      <!-- 门标接续大厅票卡，消息区域保持静态阅读。 -->
-      <div class="chat-identity">
-        <span class="paper-mark" aria-hidden="true"></span>
-        <div><h2>{{ chat.room.name }}</h2>
-        <p class="muted">{{ chat.member.nickname }} {{ chat.stealth ? "· 隐身只读" : "" }} · <span role="status">{{ status }}</span></p></div>
-      </div>
-      <button class="secondary" @click="$emit('leave')">返回大厅</button>
-    </div>
-    <p v-if="error" class="error" role="alert">{{ error }}</p>
-    <!-- 聊天页仅保留一个入口，密钥表单按需在对话框中展开。 -->
-    <dialog ref="keyDialog" class="key-dialog" aria-labelledby="device-key-title" @close="keyPassword = ''">
-      <div class="key-dialog-heading">
-        <div>
-          <h3 id="device-key-title">设备密钥</h3>
-          <p class="muted">端到端加密</p>
+    <!-- 顶部信息在短屏内独立滚动，为消息和发送栏保留空间。 -->
+    <div class="chat-context">
+      <div class="section-heading">
+        <!-- 门标接续大厅票卡，消息区域保持静态阅读。 -->
+        <div class="chat-identity">
+          <span class="paper-mark" aria-hidden="true"></span>
+          <div><h2>{{ chat.room.name }}</h2>
+          <p class="muted">{{ chat.member.nickname }} {{ chat.stealth ? "· 隐身只读" : "" }} · <span role="status">{{ status }}</span></p></div>
         </div>
-        <button type="button" class="secondary" aria-label="关闭设备密钥" @click="keyDialog.close()">关闭</button>
+        <button class="secondary" @click="$emit('leave')">返回大厅</button>
       </div>
-      <!-- HTTP 下只展示一条环境提示，禁用按钮旁始终可见原因。 -->
-      <p v-if="!secureContext" id="key-context-warning" class="key-warning" role="alert">{{ secureContextNotice }}</p>
-      <p v-else class="key-status" role="status">{{ keyBusy ? '正在处理…' : keyNotice }}</p>
-      <template v-if="auth.user?.role === 'USER' && !chat.stealth">
-        <form v-if="!myFingerprint" class="key-form" @submit.prevent="unlockKeys">
-          <label>登录密码<input v-model="keyPassword" type="password" autocomplete="current-password" required maxlength="128"
-            :disabled="keyBusy || !secureContext" :aria-describedby="!secureContext ? 'key-context-warning' : 'key-password-hint'" autofocus /></label>
-          <p id="key-password-hint" class="muted">密码重置后，请用原密码解锁。</p>
-          <button :disabled="keyBusy || !secureContext" :aria-describedby="!secureContext ? 'key-context-warning' : undefined">{{ keyBusy ? '解锁中…' : '解锁' }}</button>
-        </form>
-        <button v-else type="button" class="secondary key-refresh" :disabled="keyBusy || !secureContext" @click="refreshKeys">刷新密钥</button>
-        <details class="key-section">
-          <summary>密钥备份</summary>
-          <div class="key-section-content">
-            <p class="muted">备份需用原密码解锁；丢失后无法恢复。</p>
-            <button type="button" class="secondary" :disabled="!myFingerprint || keyBusy" @click="downloadBackup">导出备份</button>
-            <label>导入备份<input type="file" accept="application/json,.json" :disabled="keyBusy" @change="restoreBackup" /></label>
+      <p v-if="error" class="error" role="alert">{{ error }}</p>
+      <!-- 聊天页仅保留一个入口，密钥表单按需在对话框中展开。 -->
+      <dialog ref="keyDialog" class="key-dialog" aria-labelledby="device-key-title" @close="keyPassword = ''">
+        <div class="key-dialog-heading">
+          <div>
+            <h3 id="device-key-title">设备密钥</h3>
+            <p class="muted">端到端加密</p>
           </div>
-        </details>
-        <details v-if="myFingerprint" class="key-section" :open="!keyReady">
-          <summary>房间指纹</summary>
-          <div class="key-section-content">
-            <form v-if="!keyReady" class="key-form" @submit.prevent="refreshKeys">
-              <label>房主提供的完整指纹<input v-model="verifiedRoomFingerprint" autocomplete="off" maxlength="64" required
-                :disabled="keyBusy || !secureContext" placeholder="通过其他可信渠道向房主获取" /></label>
-              <button :disabled="keyBusy || !secureContext">核验指纹</button>
-            </form>
-            <template v-else>
-              <p class="muted">已核验。房主可通过可信渠道分享此指纹。</p>
-              <p class="key-fingerprint">{{ roomFingerprint }}</p>
-            </template>
-          </div>
-        </details>
-        <details v-if="myFingerprint" class="key-section">
-          <summary>设备指纹</summary>
-          <div class="key-section-content">
-            <p class="muted">通过可信渠道发给房主，用于成员授权。</p>
-            <p class="key-fingerprint">{{ myFingerprint }}</p>
-          </div>
-        </details>
-        <details v-if="owner && keyReady && candidates.length" class="key-section">
-          <summary>成员授权（{{ candidates.length }}）</summary>
-          <div class="key-section-content">
-            <p class="muted">授权后可读全部历史消息。请向成员本人核对指纹。</p>
-            <details v-for="candidate in candidates" :key="candidate.userId" class="key-candidate">
-              <summary>{{ candidate.nickname }}（账号 {{ candidate.userId }}）</summary>
-              <form class="key-form" @submit.prevent="grantMember(candidate)">
-                <label>成员本人提供的完整指纹<input v-model="candidate.verifiedFingerprint" autocomplete="off" maxlength="64" required :disabled="keyBusy" /></label>
-                <button :disabled="keyBusy || !candidate.verifiedFingerprint">核验并授权</button>
+          <button type="button" class="secondary" aria-label="关闭设备密钥" @click="keyDialog.close()">关闭</button>
+        </div>
+        <!-- HTTP 下只展示一条环境提示，禁用按钮旁始终可见原因。 -->
+        <p v-if="!secureContext" id="key-context-warning" class="key-warning" role="alert">{{ secureContextNotice }}</p>
+        <p v-else class="key-status" role="status">{{ keyBusy ? '正在处理…' : keyNotice }}</p>
+        <template v-if="auth.user?.role === 'USER' && !chat.stealth">
+          <form v-if="!myFingerprint" class="key-form" @submit.prevent="unlockKeys">
+            <label>登录密码<input v-model="keyPassword" type="password" autocomplete="current-password" required maxlength="128"
+              :disabled="keyBusy || !secureContext" :aria-describedby="!secureContext ? 'key-context-warning' : 'key-password-hint'" autofocus /></label>
+            <p id="key-password-hint" class="muted">密码重置后，请用原密码解锁。</p>
+            <button :disabled="keyBusy || !secureContext" :aria-describedby="!secureContext ? 'key-context-warning' : undefined">{{ keyBusy ? '解锁中…' : '解锁' }}</button>
+          </form>
+          <button v-else type="button" class="secondary key-refresh" :disabled="keyBusy || !secureContext" @click="refreshKeys">刷新密钥</button>
+          <details class="key-section">
+            <summary>密钥备份</summary>
+            <div class="key-section-content">
+              <p class="muted">备份需用原密码解锁；丢失后无法恢复。</p>
+              <button type="button" class="secondary" :disabled="!myFingerprint || keyBusy" @click="downloadBackup">导出备份</button>
+              <label>导入备份<input type="file" accept="application/json,.json" :disabled="keyBusy" @change="restoreBackup" /></label>
+            </div>
+          </details>
+          <details v-if="myFingerprint" class="key-section" :open="!keyReady">
+            <summary>房间指纹</summary>
+            <div class="key-section-content">
+              <form v-if="!keyReady" class="key-form" @submit.prevent="refreshKeys">
+                <label>房主提供的完整指纹<input v-model="verifiedRoomFingerprint" autocomplete="off" maxlength="64" required
+                  :disabled="keyBusy || !secureContext" placeholder="通过其他可信渠道向房主获取" /></label>
+                <button :disabled="keyBusy || !secureContext">核验指纹</button>
               </form>
-            </details>
-          </div>
-        </details>
-      </template>
-    </dialog>
-    <div class="chat-tools">
-      <button type="button" class="secondary key-entry" :class="{ 'key-ready': keyReady }" aria-haspopup="dialog" @click="openKeyDialog">设备密钥</button>
-      <button class="secondary" :disabled="refreshing || loadingHistory || sessionExpired" @click="refreshHistory">刷新消息</button>
-      <button v-if="status === '实时连接已断开'" class="secondary" :disabled="sessionExpired" @click="connect">重新连接</button>
-      <!-- 禁用发送时保留简短的密钥操作指引。 -->
-      <span v-if="auth.user?.role === 'USER' && !chat.stealth" class="muted key-hint" role="status">{{ keyReady ? '加密已就绪' : '发送前请打开设备密钥' }}</span>
+              <template v-else>
+                <p class="muted">已核验。房主可通过可信渠道分享此指纹。</p>
+                <p class="key-fingerprint">{{ roomFingerprint }}</p>
+              </template>
+            </div>
+          </details>
+          <details v-if="myFingerprint" class="key-section">
+            <summary>设备指纹</summary>
+            <div class="key-section-content">
+              <p class="muted">通过可信渠道发给房主，用于成员授权。</p>
+              <p class="key-fingerprint">{{ myFingerprint }}</p>
+            </div>
+          </details>
+          <details v-if="owner && keyReady && candidates.length" class="key-section">
+            <summary>成员授权（{{ candidates.length }}）</summary>
+            <div class="key-section-content">
+              <p class="muted">授权后可读全部历史消息。请向成员本人核对指纹。</p>
+              <details v-for="candidate in candidates" :key="candidate.userId" class="key-candidate">
+                <summary>{{ candidate.nickname }}（账号 {{ candidate.userId }}）</summary>
+                <form class="key-form" @submit.prevent="grantMember(candidate)">
+                  <label>成员本人提供的完整指纹<input v-model="candidate.verifiedFingerprint" autocomplete="off" maxlength="64" required :disabled="keyBusy" /></label>
+                  <button :disabled="keyBusy || !candidate.verifiedFingerprint">核验并授权</button>
+                </form>
+              </details>
+            </div>
+          </details>
+        </template>
+      </dialog>
+      <div class="chat-tools">
+        <button type="button" class="secondary key-entry" :class="{ 'key-ready': keyReady }" aria-haspopup="dialog" @click="openKeyDialog">设备密钥</button>
+        <button class="secondary" :disabled="refreshing || loadingHistory || sessionExpired" @click="refreshHistory">刷新消息</button>
+        <button v-if="status === '实时连接已断开'" class="secondary" :disabled="sessionExpired" @click="connect">重新连接</button>
+        <!-- 禁用发送时保留简短的密钥操作指引。 -->
+        <span v-if="auth.user?.role === 'USER' && !chat.stealth" class="muted key-hint" role="status">{{ keyReady ? '加密已就绪' : '发送前请打开设备密钥' }}</span>
+      </div>
     </div>
     <div ref="messageList" class="message-list" role="log" aria-label="聊天消息" aria-live="polite">
       <button v-if="hasMore" class="secondary load-more" :disabled="loadingHistory || refreshing" @click="loadOlder">
@@ -592,24 +595,27 @@ onBeforeUnmount(() => {
     </div>
     <p v-if="chat.stealth" class="notice">隐身只读：不会向房间公开成员或进房事件。</p>
     <form v-else class="composer" @submit.prevent="handleSend">
-      <label for="message-content">说点什么</label>
-      <textarea ref="composerInput" id="message-content" @keydown="handleEnter" v-model="draft" maxlength="1000" rows="3"
-        :disabled="sessionExpired || !keyReady" placeholder="说点什么…" required></textarea>
-      <div class="emoji-picker" aria-label="表情选择器">
-        <button v-for="emoji in emojis" :key="emoji" type="button" class="secondary" :disabled="sessionExpired" :aria-label="`插入表情 ${emoji}`" @click="insertEmoji(emoji)">{{ emoji }}</button>
-      </div>
-      <!-- 语音只保存在本地，点击发送时才使用房间密钥加密。 -->
-      <div class="voice-tools">
-        <button v-if="voicePhase === 'idle'" type="button" class="secondary"
-          :disabled="!voiceSupported || !keyReady || keyBusy || sending || sessionExpired" @click="startVoice">录语音</button>
-        <button v-if="voicePhase === 'recording'" type="button" @click="stopVoice">结束录音</button>
-        <span class="muted" role="status">{{ voicePhase === 'requesting' ? '请允许使用麦克风' : voicePhase === 'recording' ? '录音中，最多60秒' : voicePhase === 'processing' ? '正在处理录音…' : !voiceSupported ? '录音需HTTPS及浏览器支持' : '最多60秒 · 512 KiB' }}</span>
-        <button v-if="voicePhase !== 'idle'" type="button" class="secondary" :disabled="sending" @click="cancelVoice">取消语音</button>
-      </div>
-      <div v-if="voicePreview" class="voice-tools">
-        <audio :src="voicePreview" controls preload="metadata" aria-label="待发送语音预览" @error="error = '当前浏览器无法播放此语音'"></audio>
-        <span class="muted">{{ Math.ceil(voiceDuration / 1000) }}秒 · 仅本地预览</span>
-        <button type="button" :disabled="sending || sessionExpired || !keyReady || keyBusy" @click="sendVoice">{{ sending ? '发送中…' : '发送语音' }}</button>
+      <!-- 输入及语音内容可内部滚动，发送栏始终留在底部。 -->
+      <div class="composer-body">
+        <label for="message-content">说点什么</label>
+        <textarea ref="composerInput" id="message-content" @keydown="handleEnter" v-model="draft" maxlength="1000" rows="3"
+          :disabled="sessionExpired || !keyReady" placeholder="说点什么…" required></textarea>
+        <div class="emoji-picker" aria-label="表情选择器">
+          <button v-for="emoji in emojis" :key="emoji" type="button" class="secondary" :disabled="sessionExpired" :aria-label="`插入表情 ${emoji}`" @click="insertEmoji(emoji)">{{ emoji }}</button>
+        </div>
+        <!-- 语音只保存在本地，点击发送时才使用房间密钥加密。 -->
+        <div class="voice-tools">
+          <button v-if="voicePhase === 'idle'" type="button" class="secondary"
+            :disabled="!voiceSupported || !keyReady || keyBusy || sending || sessionExpired" @click="startVoice">录语音</button>
+          <button v-if="voicePhase === 'recording'" type="button" @click="stopVoice">结束录音</button>
+          <span class="muted" role="status">{{ voicePhase === 'requesting' ? '请允许使用麦克风' : voicePhase === 'recording' ? '录音中，最多60秒' : voicePhase === 'processing' ? '正在处理录音…' : !voiceSupported ? '录音需HTTPS及浏览器支持' : '最多60秒 · 512 KiB' }}</span>
+          <button v-if="voicePhase !== 'idle'" type="button" class="secondary" :disabled="sending" @click="cancelVoice">取消语音</button>
+        </div>
+        <div v-if="voicePreview" class="voice-tools">
+          <audio :src="voicePreview" controls preload="metadata" aria-label="待发送语音预览" @error="error = '当前浏览器无法播放此语音'"></audio>
+          <span class="muted">{{ Math.ceil(voiceDuration / 1000) }}秒 · 仅本地预览</span>
+          <button type="button" :disabled="sending || sessionExpired || !keyReady || keyBusy" @click="sendVoice">{{ sending ? '发送中…' : '发送语音' }}</button>
+        </div>
       </div>
       <div class="composer-footer">
         <span class="muted">{{ draft.length }} / 1000 · Enter发送 · Shift+Enter换行</span>

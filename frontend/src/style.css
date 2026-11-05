@@ -119,14 +119,27 @@ h3 { font-size: 22px; line-height: 1.5; }
 .people-row .button-link:hover { background: var(--tint); border-color: var(--action); }
 .subheading { display: flex; align-items: center; gap: 12px; margin-top: 32px; margin-bottom: 12px; font-size: 18px; }
 .subheading::after { content: ''; flex: 1; border-top: 2px dotted var(--line); }
+/* 仅聊天路由占满动态视口；页头换行由 Flex 自动扣除，不估算固定高度。 */
+.app-shell:has(> .chat-panel) { display: flex; flex-direction: column; height: 100vh; height: 100dvh; padding-bottom: max(var(--space-4), env(safe-area-inset-bottom)); overflow: hidden; }
+.app-shell:has(> .chat-panel) > .app-header { flex-shrink: 0; max-height: 25%; overflow-y: auto; margin-bottom: var(--space-4); }
+.app-shell:has(> .chat-panel) > .error { flex-shrink: 0; max-height: 15%; overflow-y: auto; }
+.chat-panel { display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; }
+/* 长标题、错误与工具栏在极短屏中仍可访问，不挤出发送栏。 */
+.chat-context { flex: 0 1 auto; min-height: 0; max-height: 40%; overflow-y: auto; overscroll-behavior: contain; padding: 6px; margin: -6px -6px 0; }
+/* 消息区预留基本阅读空间并填满余高，覆盖旧的 45vh 与 250px 下限。 */
+.chat-panel > .message-list { flex: 1 0 15%; height: auto; min-height: 0; padding-block: var(--space-2); }
+.chat-panel > .composer { display: flex; flex-direction: column; flex: 0 0 auto; min-height: 0; max-height: 60%; margin-top: var(--space-2); padding-top: var(--space-3); }
+/* 表情或语音预览展开时只滚动输入内容，保留独立的发送操作行。 */
+.chat-panel .composer-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 6px; margin: -6px -6px 0; }
+.chat-panel .composer-footer, .chat-panel > .notice { flex-shrink: 0; }
 /* 聊天标题接续票笺形态，消息与滚动区域不播放入场动画。 */
-.chat-panel > .section-heading { padding-bottom: 20px; margin-bottom: 16px; border-bottom: 2px dotted var(--line); animation: ticket-unfold var(--motion-enter) var(--ease-paper); transform-origin: left center; }
+.chat-context > .section-heading { padding-bottom: 20px; margin-bottom: 16px; border-bottom: 2px dotted var(--line); animation: ticket-unfold var(--motion-enter) var(--ease-paper); transform-origin: left center; }
 .chat-identity { display: flex; align-items: center; gap: 18px; min-width: 0; }
 .chat-identity > div { min-width: 0; }
 .chat-identity .paper-mark { width: 48px; height: 60px; }
 /* 私信使用同款邮票边框内的信封，区分房间门标。 */
 .dm-panel .paper-mark { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='60' viewBox='0 0 48 60' fill='none' stroke='%23315B42' stroke-width='1.4'%3E%3Cpath d='M4 3h40v54H4z' stroke-dasharray='3 3'/%3E%3Crect x='10' y='19' width='28' height='23' rx='1'/%3E%3Cpath d='m10 20 14 11 14-11'/%3E%3C/svg%3E"); }
-.dm-panel > .section-heading { animation-duration: 280ms; }
+.dm-panel .chat-context > .section-heading { animation-duration: 280ms; }
 .dm-privacy { background: var(--warning); }
 .chat-tools { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
 .key-hint { align-self: center; }
