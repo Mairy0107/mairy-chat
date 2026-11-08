@@ -1,0 +1,46 @@
+# Two-part task for mairy-chat (do in order)
+
+Working tree is clean on commit 73d5504 (room E2EE voice + assistant typewriter already live).
+There is a git stash: stash@{0} "wip-dm-ai-voice-before-register-http-fix-..." with unfinished DM/AI voice backend stubs. You MAY inspect it for DM voice ideas (git stash show -p), but:
+- Do NOT restore the whole stash blindly
+- Do NOT add AI/assistant voice
+- Prefer re-implementing cleanly for DM plaintext voice after Part A
+
+## Part A — MUST FIRST: register fails on HTTP
+Live bug on http://47.96.247.246/chat/ register:
+Cannot read properties of undefined (reading 'digest')
+
+Root cause: frontend/src/auth.js machineFingerprint() calls crypto.subtle.digest when crypto.subtle is undefined on non-secure HTTP IP.
+AuthView.vue register sends machineFingerprint: await machineFingerprint().
+Password auth is server BCrypt — SubtleCrypto NOT required for register/login.
+Login already skips unlockIdentity when !window.isSecureContext.
+
+Fix:
+1. machineFingerprint() must work without crypto.subtle (pure JS SHA-256 or equivalent). Keep 64-hex contract if backend requires it. Reuse localStorage saved fingerprint. Do not break 3-accounts-per-browser quota.
+2. Register/login/forgot-password succeed on insecure HTTP.
+3. Room E2EE/voice keep requiring secure context + Chinese error. Do not strip E2EE.
+4. AuthView: friendly Chinese errors instead of raw TypeError.
+5. Update docs/ARCHITECTURE.md (and AUTH notes if needed): HTTP IP fingerprint works without SubtleCrypto; room E2EE/voice still need HTTPS/localhost.
+6. Add/adjust a small frontend fingerprint fallback test.
+7. Commit Part A if you prefer two commits, OR one commit at the end covering A+B. Product files only. No push/deploy/secrets.
+
+## Part B — After A: plaintext voice in private chat (DmChatView only)
+User now wants 发语音 in DM as well.
+- DmChatView: record / preview / send / play voice messages
+- DM stays PLAINTEXT (enc=0). NO DM E2EE. Do not encrypt DM voice with room keys.
+- Keep existing ChatRoomView room voice with room E2EE.
+- Do NOT add voice to AssistantView / AI.
+- Backend: extend DM message model/API/schema as needed for kind=voice + binary/base64 payload size limits similar to room voice (e.g. <=60s, <=512KiB) but store plaintext (or plaintext base64 audio payload fields). Update schema.sql + a schema-upgrade-*-dm-voice.sql for existing DBs.
+- Reuse frontend voice recording helpers if present in stash or room code; adapt for plaintext DM send path.
+- Update docs/ARCHITECTURE.md + FEATURE_DM_NOTES.md and/or VOICE_STREAM_NOTES.md.
+- Tests for DM voice payload validation; mvn -q test or targeted tests; frontend tests; npm.cmd run build if feasible.
+
+## Final
+- git add product files only (no .env, no dist tgz, no codex-*.log/prompt/bat/pid, no task draft md decoys)
+- Commit with clear message(s)
+- Do NOT push. Do NOT deploy.
+- Chinese summary: root cause, Part A fix, Part B DM voice approach, commit hashes, files changed.
+
+## Scope lock
+- NOT: AI voice, DM E2EE, remove typewriter, DeepSeek branding changes
+- NOT: restore AI voice stubs from stash into product

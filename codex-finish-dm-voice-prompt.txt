@@ -1,0 +1,29 @@
+﻿# Finish Part B only — DM plaintext voice (resume after hung Codex)
+
+Current state (IMPORTANT — do not redo Part A):
+- HEAD is already at ff68f6f "fix(auth): support browser fingerprint registration over HTTP" (Part A committed). Parent was 73d5504.
+- Working tree has uncommitted Part B WIP for DM plaintext voice. KEEP and finish it; do not discard.
+- stash@{0} "wip-dm-ai-voice-..." still exists — inspect only if needed; do NOT restore blindly; no AI voice.
+
+## Already present WIP (verify then complete)
+Modified:
+- backend DmRequests/DmViews/DmMessage/DmService/DmSocketHandler
+- backend schema.sql + NEW schema-upgrade-20261106-dm-voice.sql
+- backend DmIntegrationTest.java
+- frontend api/chat.js, DmChatView.vue, DmChatView.test.mjs
+- NEW frontend/src/media/dm-voice.js (+ dm-voice.test.mjs)
+
+## Requirements for Part B
+- DmChatView: record / preview / send / play voice; PLAINTEXT enc=0; NO DM E2EE
+- Room ChatRoomView E2EE voice unchanged
+- NO AssistantView / AI voice
+- Backend: kind=voice + mime + duration; payload limits similar to room (~<=60s, <=512KiB); store plaintext/base64 audio
+- schema.sql + schema-upgrade-20261106-dm-voice.sql for existing MySQL
+- Docs: update docs/ARCHITECTURE.md + FEATURE_DM_NOTES.md and/or VOICE_STREAM_NOTES.md
+- Fix any failing tests. Previous hung run hit H2 DATETIME/syntax issues in DmIntegrationTest — fix MySQL vs H2 upgrade SQL compatibility for tests (upgrade SQL can stay MySQL-oriented for ECS; tests should use H2-compatible schema path).
+- Run: targeted frontend node tests; mvn test for DmIntegrationTest (use offline local m2 if needed); npm.cmd run build if feasible
+- Commit product files only with clear message (e.g. feat(dm): plaintext voice messages). No push/deploy. No .env, logs, bats, prompts, pid, probe files in commit.
+- Chinese summary: approach, commit hash, files changed, test results.
+
+## Scope lock
+NOT: AI voice, DM E2EE, redo Part A, push/deploy, restore AI stubs from stash

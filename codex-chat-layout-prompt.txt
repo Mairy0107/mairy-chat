@@ -1,0 +1,54 @@
+﻿# Rebalance chat layout — message list majority, compact composer + header
+
+## Goal
+User screenshot (open `codex-chat-layout-shot.png` in this repo root): DM chat shows message list as a **tiny strip**; composer (tall textarea + voice tip + footer) dominates vertical space. Same issue can hit ChatRoomView.
+
+Fix ChatRoomView + DmChatView (+ shared `frontend/src/style.css`, and App header styles used on chat routes):
+1. **Message list gets the majority of viewport height** (`flex-grow` / `flex: 1 1 0; min-height: 0; overflow-y: auto`).
+2. **Shrink composer**: shorter textarea (few rows / lower min-height / max-height), compact voice row & tip, less padding/margins; keep composer **pinned at bottom** (sticky flex from commit `0c70b06`).
+3. **Also squeeze the top area** so messages get more space:
+   - App header (`Mairy Chat` / 大厅 / 退出): reduce margin, padding, link min-heights on chat routes (prefer scoped via `.app-shell:has(> .chat-panel) > .app-header` so lobby/auth look unchanged unless a tiny shared tweak is clearly better).
+   - Chat panel title/status/返回大厅 row + tools/notices: tighter padding/gaps/margins; keep readable; do not remove stealth/E2EE notices.
+4. Reasonable bubble typography; do **not** let composer dominate.
+5. Keep room E2EE voice + DM plaintext voice behavior unchanged (record/preview/send/play).
+6. Concise minimal Chinese UI; paper-card aesthetic; no big redesign.
+
+## Hard constraints
+- Model already set by launcher: gpt-6.1-sol high. Edit this repo only yourself.
+- Do NOT change AssistantView / AI typewriter unless a shared CSS tweak forces a tiny safe adjustment.
+- No schema / backend API changes.
+- Update `docs/ARCHITECTURE.md` §前端聊天布局 if the described flex/max-height behavior changes.
+- Follow AGENTS.md and `C:/Users/mrmai/.codex/skills/ui-craft/SKILL.md` if present.
+- Prefer UTF-8 carefully; if apply_patch hits invalid-utf8, rewrite via PowerShell/Node UTF-8 no BOM.
+
+## Known CSS smell (verify then fix — do not blindly paste)
+In `frontend/src/style.css` after `0c70b06`:
+- `.chat-panel > .composer { max-height: 60%; }` — composer can eat most of the panel; **remove or sharply lower** (e.g. ~35% hard cap only as safety).
+- `.chat-panel .composer-body { flex: 1 1 auto; }` — lets composer body grow; prefer **flex-shrink: 0** / natural height, not grow.
+- Global `textarea { min-height: 80px; }` — too tall for chat; scope a smaller min-height (and optional max-height) under `.chat-panel .composer textarea` (rows ~2–3).
+- `.chat-panel > .message-list { flex: 1 0 15%; }` — odd basis; prefer `flex: 1 1 0; min-height: 0` and ensure base `.message-list { height: 45vh; min-height: 250px; }` is overridden inside `.chat-panel` so it does not fight flex.
+- Large `.app-shell` / `.app-header` / `.panel` padding eats message space on chat routes — compact on chat routes only.
+
+## Preferred approach
+1. Keep vertical flex: app-shell (chat) → header (shrink) → chat-panel (flex 1) → context/tools (shrink, compact) → message-list (flex 1, scrolls) → composer (shrink 0, compact, pinned bottom).
+2. Composer: short textarea; compact `.voice-tools` (smaller button min-height if needed, wrap tip to one muted line / smaller font); tighter composer padding/border spacing.
+3. Preserve auto-scroll helpers in both views; key dialog; media queries for narrow screens.
+4. Do not break lobby / auth / assistant layouts.
+
+## Tests
+- Update view tests only if they assert layout structure that changes.
+- Run: `node --experimental-vm-modules --test` for DmChatView + ChatRoomView tests (and related if needed).
+- `npm.cmd run build` in `frontend/`.
+- No backend mvn unless you touch Java (don't).
+
+## Commit
+- Commit **product files only** (views, style.css, App.vue if needed, tests, docs). Message e.g. `fix(ui): give chat message list majority height`.
+- Do NOT commit: .env*, codex-*.log/bat/prompt/pid/exit/last, screenshots used for prompts, node_modules, target, probe files.
+- **Do NOT push or deploy** — parent will push `origin main` and deploy ECS frontend after you finish.
+
+## Done criteria (write Chinese summary to last-message file)
+1. What changed (header / list / composer)
+2. Files changed
+3. Commit hash(es)
+4. Test/build results
+5. Note: parent handles push + deploy

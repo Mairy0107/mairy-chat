@@ -1,0 +1,9 @@
+已完成 Part B，提交：`19f8e68` — `feat(dm): plaintext voice messages`。
+
+- **实现**：私聊录音、预览、发送、播放；固定 `enc=0`，Base64 明文存储，限制 60 秒／512 KiB。修复 H2 迁移测试兼容问题。
+- **文件**：共 15 个，涉及 `DmChatView`、私聊 API、`dm-voice` 编解码及测试、后端 DM DTO／实体／服务／推送、两份 SQL 和两份文档。完整清单见 [FEATURE_DM_NOTES.md](C:/Users/mrmai/Desktop/mairy-chat/FEATURE_DM_NOTES.md)。
+- **验证**：前端 23 项、后端 15 项全部通过（含 `DmIntegrationTest` 4 项）；前端 build、差异检查通过。
+
+Review 无阻断问题。待你决定的后续项：历史整页音频最大约 35 MB，是否改为按需加载。真实 MySQL 迁移及设备编解码尚未实测。
+
+Part A、房间 E2EE、Assistant 均未改动；stash 保留，辅助文件未提交，未推送或部署。

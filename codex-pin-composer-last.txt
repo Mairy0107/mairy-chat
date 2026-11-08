@@ -1,0 +1,9 @@
+已完成并提交：`0c70b06`。
+
+采用 Flex 将房间、私聊输入区保留在视口底部，消息列表独立滚动；短屏内容过高时内部滚动。原有聊天、语音、密钥及自动滚动逻辑保留。
+
+修改了 `ChatRoomView.vue`、`DmChatView.vue`、`style.css` 和 `docs/ARCHITECTURE.md`。
+
+32 项测试、Vite 构建及 diff 检查通过。Review 未发现阻断问题；未访问浏览器，真实短屏效果尚待验收。
+
+已写入 [交付记录](C:/Users/mrmai/Desktop/mairy-chat/codex-pin-composer-last.txt)。未推送、未部署，交由父流程处理。

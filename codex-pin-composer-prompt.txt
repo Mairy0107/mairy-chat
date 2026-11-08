@@ -1,0 +1,53 @@
+﻿# Pin chat composer (大厅 + 私聊) — no page scroll to send
+
+## Goal
+User complaint: on ChatRoomView (大厅房间) and DmChatView (私聊), the composer (录语音 / 说点什么 / 发送) sits below the message list. On short viewports they must scroll the **whole page** to reach it. Screenshots show composer below the fold.
+
+Fix: sticky/fixed composer at the bottom of the usable viewport (prefer flex column layout). Message list scrolls independently. New messages still auto-scroll when appropriate.
+
+## Hard constraints
+- Model already set by launcher: gpt-6.1-sol high. Do all code edits yourself in this repo only.
+- Minimalist Chinese UI; do NOT invent a big redesign. Keep paper-card aesthetic.
+- Keep ALL existing features: room E2EE voice, DM plaintext voice UI, key dialog, emojis, stealth notice, etc.
+- Do NOT change AssistantView / AI typewriter unless a shared CSS tweak forces a tiny safe adjustment.
+- No schema / backend API changes expected.
+- Update docs/ARCHITECTURE.md if layout structure description changes (frontend views / CSS section).
+- Follow AGENTS.md and C:/Users/mrmai/.codex/skills/ui-craft/SKILL.md if present.
+- Prefer UTF-8 file tools carefully; previous runs had invalid-utf8 apply_patch failures — if patch fails, rewrite via PowerShell/Node with UTF-8 no BOM.
+
+## Current structure (verify in code)
+- `frontend/src/views/ChatRoomView.vue`: `.panel.chat-panel` → heading → tools → `.message-list` → `.composer`
+- `frontend/src/views/DmChatView.vue`: same pattern inside `v-if="thread"`
+- `frontend/src/style.css`: `.message-list { height: 45vh; min-height: 250px; overflow-y: auto; }` and `.composer { margin-top: 16px; ... }` — this fixed 45vh list + composer below causes page scroll on short screens.
+- `App.vue` wraps routes in `<main class="app-shell">`.
+
+## Preferred layout approach
+1. Make `.chat-panel` (room + DM) a vertical flex column that fills available viewport height, e.g. roughly:
+   - `display: flex; flex-direction: column;`
+   - height based on `100dvh` minus app header/padding (use calc; account for `.app-shell` padding and any top header in App.vue)
+2. Keep heading + tools + notices near top (`flex-shrink: 0`).
+3. `.message-list` becomes `flex: 1 1 auto; min-height: 0; overflow-y: auto;` — remove fixed `45vh` as the primary constraint (may keep a sensible min-height if needed).
+4. `.composer` pinned at bottom of the panel (`flex-shrink: 0`), always visible without scrolling the page. Optional `position: sticky; bottom: 0` only if flex approach needs reinforcement with background so messages don't show through.
+5. Ensure body/page does not require scrolling just to reach send. If app-shell itself scrolls, constrain chat route height so only `.message-list` scrolls.
+6. Preserve auto-scroll-to-bottom behavior already in the views when new messages arrive / after send (check existing `messageList` scroll helpers — do not break).
+7. Mobile / narrow CSS media queries in style.css must still work; composer footer wrap OK.
+8. Key dialog remains a dialog overlay; do not break it.
+
+## Tests
+- Update/extend `ChatRoomView.test.mjs` / `DmChatView.test.mjs` only if they assert layout class structure that changes; otherwise keep green.
+- Run targeted frontend tests: `node --experimental-vm-modules --test` for the affected view tests (and any related).
+- `npm.cmd run build` in frontend/ to verify Vite build.
+- No backend mvn required unless you accidentally touch Java (don't).
+
+## Commit
+- Commit **product files only** (views, style.css, tests, docs). Clear message e.g. `fix(ui): pin room and DM composers to viewport bottom`.
+- Do NOT commit: .env*, codex-*.log/bat/prompt/pid/exit/last, probe files, node_modules, target, dist if not tracked.
+- **Do NOT push or deploy** — parent will push origin main and deploy ECS after you finish.
+
+## Done criteria (write to last-message file)
+Chinese summary with:
+1. Approach (flex vs sticky)
+2. Files changed
+3. Commit hash(es)
+4. Test/build results
+5. Anything left for parent (push/deploy)

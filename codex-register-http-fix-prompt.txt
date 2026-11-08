@@ -1,0 +1,32 @@
+# Fix: register fails on HTTP with crypto.subtle.digest
+
+## Bug (live)
+User on http://47.96.247.246/chat/ register page gets red error:
+Cannot read properties of undefined (reading 'digest')
+
+## Root cause (confirmed)
+frontend/src/auth.js machineFingerprint() always calls crypto.subtle.digest(...).
+On non-secure context (HTTP IP, not localhost), crypto.subtle is undefined -> crash.
+AuthView.vue register body includes machineFingerprint: await machineFingerprint().
+Login already skips unlockIdentity when !window.isSecureContext; register path was not guarded.
+Password auth is server-side BCrypt — WebCrypto is NOT required for register/login passwords.
+
+ARCHITECTURE.md currently claims register fingerprint also calls crypto.subtle and should register in a secure context — that claim is outdated for live HTTP IP access and must be corrected after the fix.
+
+## MUST fix
+1. Make machineFingerprint() work WITHOUT crypto.subtle when unavailable (HTTP). Prefer a stable non-subtle SHA-256 (pure JS) or equivalent fallback fingerprint still matching backend expectations (check AuthService / DTO: likely 64 hex chars). Do not break the 3-accounts-per-browser quota. Prefer reusing an existing saved fingerprint in localStorage.
+2. Register + login + forgot-password must succeed on insecure HTTP for password auth. Do not require subtle for those flows.
+3. Room E2EE / voice that truly need subtle: keep requiring secure context with clear Chinese error (existing e2ee.js pattern). Do NOT strip E2EE.
+4. Surface friendly Chinese errors in AuthView instead of raw JS TypeError if any crypto path still fails.
+5. Update docs/ARCHITECTURE.md (and AUTH notes if needed): live HTTP IP is non-secure; register/login fingerprint works without SubtleCrypto; room E2EE/voice still need HTTPS or localhost.
+6. Add/adjust a small frontend unit test if project already has auth/fingerprint tests; otherwise a focused node test for fingerprint fallback is fine.
+7. Run relevant frontend tests; npm.cmd run build in frontend if feasible. Backend change unlikely — only if validation must relax.
+8. git add product files only (frontend auth + docs + tests). Commit with a clear message. Do NOT push. Do NOT deploy. No secrets. No .env.
+
+## Scope lock
+- ONLY this HTTP register/fingerprint fix.
+- Working tree was cleaned; unfinished DM/AI voice WIP is stashed — do NOT restore or continue it.
+- Do not change typewriter, DeepSeek copy, DM E2EE, or expand voice.
+
+## Review
+Chinese summary: root cause, files changed, commit hash, how fingerprint works on HTTP vs HTTPS.

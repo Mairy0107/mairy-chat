@@ -1,0 +1,13 @@
+已提交 `ef140a1`，仅包含 4 个产品文件。
+
+| 调整前 | 调整后 | 原因 |
+| --- | --- | --- |
+| 页头与顶部留白较大 | 仅聊天页收紧间距 | 增加阅读空间 |
+| 消息列表 basis 为 15% | `flex: 1 1 0`，独立滚动 | 优先填满余高 |
+| 输入区上限 60% | 两行输入，上限 35%，发送行保持底部 | 防止输入区占主导 |
+
+修改文件：`style.css`、`ChatRoomView.vue`、`DmChatView.vue`、`docs/ARCHITECTURE.md`。
+
+22 项测试、生产构建、diff 检查均通过。Review 未发现阻断问题；语音与自动滚动脚本未变。未访问浏览器，视觉效果尚未实测。
+
+中文总结已写入 [codex-chat-layout-last.txt](C:/Users/mrmai/Desktop/mairy-chat/codex-chat-layout-last.txt)。未推送、未部署，由父任务处理。
