@@ -1,14 +1,16 @@
 package com.mairy.chat.service.ai;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectReader;
 import java.nio.ByteBuffer;
 import org.springframework.core.io.buffer.DataBuffer;
 
 /** 请求独享的旁路校验，不移动 DataBuffer 游标，不替代官方模型的协议映射。 */
 final class UpstreamSseGuard {
     private static final int FRAME_LIMIT = 65536;
-    private final ObjectMapper json;
+    private final ObjectReader json;
     private final StringBuilder line = new StringBuilder();
     private final StringBuilder data = new StringBuilder();
     private int remaining;
@@ -21,8 +23,10 @@ final class UpstreamSseGuard {
     private volatile boolean done;
     private volatile RuntimeException failure;
 
-    /** 每轮新建校验器，JSON 解析器复用应用现有实例。 */
-    UpstreamSseGuard(ObjectMapper json) { this.json = json; }
+    /** 每轮复用应用解析配置，独立启用尾随内容校验。 */
+    UpstreamSseGuard(ObjectMapper json) {
+        this.json = json.reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+    }
 
     /** 复制字节视图逐字节检查 UTF-8，原缓冲仍由 WebClient 单次消费与释放。 */
     void observe(DataBuffer buffer) {
@@ -51,13 +55,13 @@ final class UpstreamSseGuard {
 
     /** SDK 正常完成不代表完整，必须实际看到上游 DONE 且无协议错误。 */
     void requireComplete() {
-        checkFailure();
+        if (failure != null) throw failure;
         if (!done) throw invalid();
     }
 
-    /** 跨 Reactor 异常包装恢复固定错误分类，保留内容拦截语义。 */
-    void checkFailure() {
-        if (failure != null) throw failure;
+    /** 跨 Reactor 包装恢复拦截分类，普通协议异常由网关统一转换为 IOException。 */
+    void checkBlocked() {
+        if (failure instanceof SensitiveWordFilter.BlockedOutput blocked) throw blocked;
     }
 
     /** 严格增量解码 UTF-8，支持中文和 emoji 在任意字节处分片。 */

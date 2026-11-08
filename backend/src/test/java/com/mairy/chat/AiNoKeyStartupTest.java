@@ -63,8 +63,9 @@ class AiNoKeyStartupTest {
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray()).path("token").asText();
         mvc.perform(get("/api/ai/status").header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.enabled").value(false));
+        // 新建空会话沿用控制器的 201 契约，无密钥不影响创建。
         String id = json.readTree(mvc.perform(post("/api/ai/threads").header("Authorization", "Bearer " + token))
-                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray()).path("id").asText();
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsByteArray()).path("id").asText();
         jdbc.update("INSERT INTO chat_ai_message(thread_id,role,content,created_at) VALUES(?,'assistant','历史仍可读',?)", id, ChatTime.now());
         String path = "/api/ai/threads/" + id + "/messages";
         mvc.perform(get(path).header("Authorization", "Bearer " + token)).andExpect(status().isOk())

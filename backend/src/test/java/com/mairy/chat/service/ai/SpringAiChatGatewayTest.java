@@ -51,7 +51,7 @@ class SpringAiChatGatewayTest {
             requests.incrementAndGet();
             path.set(request.uri());
             auth.set(request.requestHeaders().get("Authorization"));
-            return request.receive().aggregate().asString().flatMap(input -> {
+            return request.receive().aggregate().asString(StandardCharsets.UTF_8).flatMap(input -> {
                 body.set(input);
                 String first = ": ping\r\n\r\n" + frame("{\"role\":\"assistant\",\"content\":null}", "null")
                         + frame("{\"reasoning_content\":\"不得转发\",\"content\":\"你好🌿\"}", "null")
@@ -182,19 +182,48 @@ class SpringAiChatGatewayTest {
         var server = HttpServer.create().host("127.0.0.1").port(0).handle((request, response) -> {
             request.withConnection(connection -> connection.onDispose(closed::incrementAndGet));
             return response.header("Content-Type", "text/event-stream").sendString(Flux.concat(
-                    Mono.just(frame("{\"content\":\"敏感\"}", "null")), Flux.never()));
+                    // SSE 固定使用 UTF-8，避免 Windows 默认 GBK 生成非法协议字节。
+                    Mono.just(frame("{\"content\":\"敏感\"}", "null")), Flux.never()), StandardCharsets.UTF_8);
         }).bindNow();
         var gateway = gateway(server.port(), 1000, 2500);
         try {
             for (int index = 0; index < 12; index++) {
-                if (index % 2 == 0) assertThrows(IOException.class,
-                        () -> gateway.stream(MESSAGES, ignored -> { throw new IOException("客户端断开"); }));
-                else assertThrows(SensitiveWordFilter.BlockedOutput.class,
-                        () -> gateway.stream(MESSAGES, ignored -> { throw new SensitiveWordFilter.BlockedOutput(); }));
+                // 核对原始异常实例，避免将读取或连接池超时误认为回调已执行。
+                if (index % 2 == 0) {
+                    var failure = new IOException("客户端断开");
+                    assertSame(failure, assertThrows(IOException.class,
+                            () -> gateway.stream(MESSAGES, ignored -> { throw failure; })));
+                } else {
+                    var failure = new SensitiveWordFilter.BlockedOutput();
+                    assertSame(failure, assertThrows(SensitiveWordFilter.BlockedOutput.class,
+                            () -> gateway.stream(MESSAGES, ignored -> { throw failure; })));
+                }
             }
             long deadline = System.nanoTime() + Duration.ofSeconds(3).toNanos();
             while (closed.get() < 12 && System.nanoTime() < deadline) Thread.sleep(10);
             assertEquals(12, closed.get());
+        } finally { gateway.destroy(); server.disposeNow(); }
+    }
+
+    /** 连续正文增量不能重置总预算，超时后必须关闭原始 TCP 流。 */
+    @Test
+    void activeDeltasStillRespectAbsoluteTimeout() throws Exception {
+        var closed = new CountDownLatch(1);
+        var deltas = new AtomicInteger();
+        var server = HttpServer.create().host("127.0.0.1").port(0).handle((request, response) -> {
+            request.withConnection(connection -> connection.onDispose(closed::countDown));
+            return response.header("Content-Type", "text/event-stream").sendString(
+                    Flux.interval(Duration.ofMillis(25)).map(index -> frame("{\"content\":\"正文\"}", "null")),
+                    StandardCharsets.UTF_8);
+        }).bindNow();
+        var gateway = gateway(server.port(), 1500, 400);
+        try {
+            long started = System.nanoTime();
+            var error = assertThrows(IOException.class, () -> gateway.stream(MESSAGES, ignored -> deltas.incrementAndGet()));
+            assertEquals("上游总时限已到", error.getMessage());
+            assertTrue(deltas.get() > 1);
+            assertTrue(Duration.ofNanos(System.nanoTime() - started).toMillis() < 2400);
+            assertTrue(closed.await(3, TimeUnit.SECONDS));
         } finally { gateway.destroy(); server.disposeNow(); }
     }
 

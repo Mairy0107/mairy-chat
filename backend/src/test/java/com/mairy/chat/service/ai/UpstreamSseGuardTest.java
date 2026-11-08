@@ -69,6 +69,19 @@ class UpstreamSseGuardTest {
         assertNull(error.getCause());
     }
 
+    /** 合法 JSON 后的额外值必须拒绝，应用共享的解析配置保持独立。 */
+    @ParameterizedTest
+    @ValueSource(strings = {"false", "{}", "fixture-secret"})
+    void trailingJsonFailsSafely(String tail) {
+        var mapper = new ObjectMapper();
+        var guard = new UpstreamSseGuard(mapper);
+        String input = frame("{\"content\":\"正文\"}", "null").replace("\n\n", " " + tail + "\n\n");
+        var error = assertThrows(IllegalStateException.class, () -> observe(guard, input));
+        assertEquals("上游流校验失败", error.getMessage());
+        assertNull(error.getCause());
+        assertFalse(mapper.isEnabled(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS));
+    }
+
     /** 超长行、多行累计、UTF-8 残片及非法码点必须有界失败。 */
     @Test
     void boundedProtocolAndStrictUtf8() {

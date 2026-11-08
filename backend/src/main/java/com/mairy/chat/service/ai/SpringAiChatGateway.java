@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -28,6 +29,7 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.resources.LoopResources;
@@ -58,26 +60,27 @@ public class SpringAiChatGateway implements AiModelGateway, DisposableBean {
                         .thenReturn(new IOException("上游请求失败")));
     }
 
-    /** MVC 线程按一个元素背压消费；关闭 Stream 会取消上游，不在 Netty 线程写 Servlet。 */
+    /** MVC 线程有界消费并取消上游，协议失败统一为安全 IO 错误，拦截保留业务分类。 */
     @Override
     public void stream(List<Map<String, String>> messages, DeltaConsumer consumer) throws IOException {
         if (properties.getApiKey() == null || properties.getApiKey().isBlank()) throw new IOException("助手未配置");
         List<Message> prompt = messages.stream().map(this::message).toList();
         var guard = new UpstreamSseGuard(json);
+        var cancellation = Sinks.<Void>empty();
         long deadline = System.nanoTime() + Duration.ofMillis(properties.getTotalTimeout()).toNanos();
         var api = DeepSeekApi.builder().baseUrl(properties.getBaseUrl().replaceAll("/+$", ""))
                 .completionsPath("/chat/completions").apiKey(properties.getApiKey())
-                .restClientBuilder(RestClient.builder()).webClientBuilder(guardedClient(guard)).build();
+                .restClientBuilder(RestClient.builder()).webClientBuilder(guardedClient(guard, cancellation.asMono())).build();
         var options = DeepSeekChatOptions.builder().model(properties.getModel()).temperature(properties.getTemperature())
                 .maxTokens(properties.getMaxTokens()).internalToolExecutionEnabled(false).build();
         var model = DeepSeekChatModel.builder().deepSeekApi(api).defaultOptions(options)
                 .retryTemplate(RetryTemplate.builder().maxAttempts(1).build()).build();
-        // 定时器发出错误并取消上游；不能使用 take(Duration) 将超时伪装为正常完成。
-        Mono<Long> timeout = Mono.delay(Duration.ofNanos(Math.max(1, deadline - System.nanoTime())))
-                .flatMap(ignored -> Mono.error(new IOException("上游总时限已到")));
+        // 每次订阅按同一绝对截止时间计算，持续增量不能延长预算。
+        Mono<Long> timeout = Mono.defer(() -> Mono.delay(Duration.ofNanos(Math.max(1, deadline - System.nanoTime()))));
         int length = 0;
         boolean nonblank = false;
-        try (var stream = model.stream(new Prompt(prompt)).takeUntilOther(timeout).toStream(1)) {
+        try (var stream = model.stream(new Prompt(prompt)).timeout(timeout, ignored -> timeout,
+                Flux.error(new IOException("上游总时限已到"))).toStream(1)) {
             var iterator = stream.iterator();
             while (iterator.hasNext()) {
                 checkDeadline(deadline);
@@ -96,20 +99,29 @@ public class SpringAiChatGateway implements AiModelGateway, DisposableBean {
         } catch (IOException exception) {
             throw exception;
         } catch (RuntimeException exception) {
-            // Reactor 包装的过滤异常仍转换为 blocked，其他错误不保留潜在正文异常链。
-            guard.checkFailure();
+            // 恢复可安全判定的拦截与总超时，其余错误不保留上游正文异常链。
+            guard.checkBlocked();
+            checkDeadline(deadline);
             throw new IOException("上游调用失败");
+        } finally {
+            // SDK 内部窗口可能延迟传递取消，调用结束时直接终止原始响应订阅。
+            cancellation.tryEmitEmpty();
         }
     }
 
-    /** 单次订阅旁路查看原始 body；异常时释放尚未交付给解码器的缓冲。 */
-    private WebClient.Builder guardedClient(UpstreamSseGuard guard) {
+    /** 单次订阅原始 body 并监听请求结束信号，释放失败或取消中的网络流。 */
+    private WebClient.Builder guardedClient(UpstreamSseGuard guard, Mono<Void> cancellation) {
         return webClient.clone().filter((request, next) -> next.exchange(request).map(response -> {
-            Flux<DataBuffer> body = response.bodyToFlux(DataBuffer.class).<DataBuffer>handle((buffer, sink) -> {
-                try { guard.observe(buffer); sink.next(buffer); }
-                catch (RuntimeException exception) { DataBufferUtils.release(buffer); sink.error(exception); }
-            }).doOnComplete(guard::end);
-            return response.mutate().body(body).build();
+            var subscribed = new AtomicBoolean();
+            // 使用变换重载，避免替换 body 时额外订阅并释放原始响应流。
+            return response.mutate().body(body -> Flux.defer(() -> {
+                // WebClient 包装读取错误时可能再次 releaseBody，不能重读单次响应。
+                if (!subscribed.compareAndSet(false, true)) return Flux.empty();
+                return body.<DataBuffer>handle((buffer, sink) -> {
+                    try { guard.observe(buffer); sink.next(buffer); }
+                    catch (RuntimeException exception) { DataBufferUtils.release(buffer); sink.error(exception); }
+                }).doOnComplete(guard::end).takeUntilOther(cancellation);
+            })).build();
         }));
     }
 
