@@ -29,8 +29,23 @@ chat:
   allowed-origins: ${CHAT_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
   # 助手凭证只从服务端环境注入，绝不使用 VITE_ 变量。
   ai:
+    provider: spring-ai
     api-key: ${DEEPSEEK_API_KEY:}
     base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
     model: ${DEEPSEEK_MODEL:deepseek-chat}
+    # 超时单位为毫秒；两种 provider 共用，不增加 spring.ai 凭证配置。
+    temperature: 0.3
+    max-tokens: 2048
+    connect-timeout: 10000
+    read-timeout: 45000
+    total-timeout: 120000
     daily-quota: 40
     sensitive-words: []
+
+# SDK 的提示词、异常与 HTTP 调试日志可能含正文或凭证，关闭风险类别。
+logging:
+  level:
+    org.springframework.ai: "OFF"
+    org.springframework.web.reactive.function.client: "OFF"
+    org.springframework.http.client: "OFF"
+    reactor.netty: "OFF"

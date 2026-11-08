@@ -10,7 +10,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mairy.chat.config.AiProperties;
 import com.mairy.chat.mapper.AiUsageMapper;
-import com.mairy.chat.service.ai.DeepSeekClient;
+import com.mairy.chat.service.ai.AiModelGateway;
 import com.mairy.chat.service.ai.SensitiveWordFilter;
 import com.mairy.chat.util.ChatTime;
 import java.nio.charset.StandardCharsets;
@@ -47,7 +47,7 @@ class AiIntegrationTest {
     @Autowired private PasswordEncoder encoder;
     @Autowired private AiProperties properties;
     @Autowired private AiUsageMapper usage;
-    @MockitoBean private DeepSeekClient client;
+    @MockitoBean private AiModelGateway client;
     private String alice;
     private String bob;
 
@@ -73,7 +73,7 @@ class AiIntegrationTest {
         jdbc.update("DELETE FROM chat_ai_usage_daily");
         reset(client);
         doAnswer(invocation -> {
-            DeepSeekClient.DeltaConsumer out = invocation.getArgument(1);
+            AiModelGateway.DeltaConsumer out = invocation.getArgument(1);
             out.accept("你好，");
             out.accept("有什么可以帮你？");
             return null;
@@ -127,7 +127,7 @@ class AiIntegrationTest {
         assertNull(usage.count(201L, ChatTime.now().toLocalDate()));
         verifyNoInteractions(client);
         doAnswer(invocation -> {
-            DeepSeekClient.DeltaConsumer out = invocation.getArgument(1);
+            AiModelGateway.DeltaConsumer out = invocation.getArgument(1);
             out.accept("正常说明。测试");
             out.accept("拦截");
             out.accept("词");

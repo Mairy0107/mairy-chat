@@ -10,12 +10,14 @@ import java.util.List;
 import java.util.Map;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
 /** 薄 HTTP 客户端只处理 DeepSeek 协议，不记录请求、响应或上游错误正文。 */
 @Component
-public class DeepSeekClient {
+@ConditionalOnProperty(prefix = "chat.ai", name = "provider", havingValue = "legacy")
+public class DeepSeekClient implements AiModelGateway {
     private final AiProperties properties;
     private final ObjectMapper json;
     private final RestClient client;
@@ -25,20 +27,21 @@ public class DeepSeekClient {
         this.properties = properties;
         this.json = json;
         var factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(Duration.ofSeconds(10));
-        factory.setReadTimeout(Duration.ofSeconds(45));
+        factory.setConnectTimeout(Duration.ofMillis(properties.getConnectTimeout()));
+        factory.setReadTimeout(Duration.ofMillis(properties.getReadTimeout()));
         client = RestClient.builder().requestFactory(factory).build();
     }
 
     /** 分块读取 SSE 并即时转发完整 data 帧，必须收到 DONE 才认为回复完整。 */
+    @Override
     public void stream(List<Map<String, String>> messages, DeltaConsumer consumer) throws IOException {
         String base = properties.getBaseUrl().replaceAll("/+$", "");
-        long deadline = System.nanoTime() + Duration.ofSeconds(120).toNanos();
+        long deadline = System.nanoTime() + Duration.ofMillis(properties.getTotalTimeout()).toNanos();
         client.post().uri(base + "/chat/completions")
                 .headers(headers -> headers.setBearerAuth(properties.getApiKey()))
                 .contentType(MediaType.APPLICATION_JSON).accept(MediaType.TEXT_EVENT_STREAM)
                 .body(Map.of("model", properties.getModel(), "messages", messages, "stream", true,
-                        "temperature", 0.3, "max_tokens", 2048))
+                        "temperature", properties.getTemperature(), "max_tokens", properties.getMaxTokens()))
                 .exchange((request, response) -> {
                     if (!response.getStatusCode().is2xxSuccessful()) throw new IOException("上游请求失败");
                     try (var reader = new InputStreamReader(response.getBody(), StandardCharsets.UTF_8)) {
@@ -97,9 +100,4 @@ public class DeepSeekClient {
         return false;
     }
 
-    /** 回调允许下游断连中止上游读取并关闭连接。 */
-    @FunctionalInterface
-    public interface DeltaConsumer {
-        void accept(String content) throws IOException;
-    }
 }

@@ -312,6 +312,31 @@ SSE 事件依次为 `user`（已保存的用户消息）、`delta`（安全增�
 
 上游使用 4096 字符缓冲分块解码 UTF-8，跨块保留半行，完整 SSE 帧立即交付；单行及累计 data 仍限制 65536 字符，保留超时和 DONE 完整性校验。后端高效读取 SSE 并逐事件 flush；前端将 delta 排入打字机队列，约每 30ms 展示一个 Unicode 码点（含完整 emoji 码点）。done 保留已显示前缀并继续逐字展示余下内容，replace 清除旧队列后重新逐字展示。响应设置 `X-Accel-Buffering: no`、`Cache-Control: no-cache, no-transform`，nginx `/chat/api/` 显式设置 `proxy_buffering off`，用于逐步转发。部署方需保留该响应头行为及足够的 SSE 超时。P0 仅文字，不包含问卷、人格覆盖、语音、附件、删除记录、token计费、语义审核或工具调用。验收和边界见 [FEATURE_AI_NOTES.md](../FEATURE_AI_NOTES.md) 及 [VOICE_STREAM_NOTES.md](../VOICE_STREAM_NOTES.md)。
 
+### Spring AI 调用层迁移的本地状态（2026-11-08，未完成验收）
+
+当前工作区新增 `AiModelGateway` 阻塞流边界，`AiStreamService` 注入该接口；
+`chat.ai.provider` 默认 `spring-ai`，另可设置 `legacy` 回退至保留的 `DeepSeekClient`，两种实现按条件注册。
+Spring AI 使用 1.1.8 BOM 与官方 `spring-ai-deepseek`，手动逐轮构造 API / 模型，不使用自动配置 starter；
+Boot 3.5.16、Java 17、MyBatis-Plus 3.5.18、MVC 服务端和数据库结构保持原状。WebFlux 仅用于上游客户端。
+
+凭证仍仅由 `chat.ai.*` 绑定现有 `DEEPSEEK_API_KEY / BASE_URL / MODEL`；无密钥不构造模型，
+既有业务在扣额和保存用户消息前返回 503，状态与历史保留。默认请求为 `https://api.deepseek.com/chat/completions`、
+`deepseek-chat`、temperature 0.3、max_tokens 2048；新增温度、token 和毫秒级 connect/read/total-timeout 配置，
+默认 10000 / 45000 / 120000。温度要求有限且为 0～2；token 为 1～8192，连接及读取超时为 1～120000，
+总时限为 1～180000。输入 2000、上下文 20 条 / 24000 Java 字符、输出 16000、8 条流及 3 分钟租约沿用原业务。
+
+新增请求独享 `UpstreamSseGuard` 在 WebClient 原始 body 上旁路检查 UTF-8、SSE、JSON 结构和实际 `[DONE]`，
+单行 / data 限 65536 字符，另限整轮协议体 1048576 字符及 4096 帧；正常 EOF 不能代替 DONE。
+官方模型负责协议映射，MVC 通过 `toStream(1)` 消费普通正文；工具执行关闭，不配置重试、自动重放和运行时回退。
+共享连接池及事件线程在应用关闭时释放。SDK 与 HTTP 风险日志类别关闭，业务仅记录固定安全事件。
+
+取消会在下一次下游写入 / checkError 或有限上游超时被发现；绝对时限取消上游，但不能主动中断已经阻塞的 Servlet 写入。
+配额仍在 prepare 时计费，停止或失败不退；安全回复保存后才发送 done。现有 SSE 事件和事务边界不变。
+
+本轮 `mvn dependency:tree` 因下载被环境拒绝而失败，离线 compile 又因资源插件传递依赖缺失失败，
+均未进入 Java 编译或测试。新增实现未通过编译、真实无密钥启动、协议边界和取消等要求的本地验收，
+不能视为可部署状态；具体命令及未验证范围见 [FEATURE_AI_NOTES.md](../FEATURE_AI_NOTES.md)。
+
 ## 13. 相关文档与维护检查
 
 | 文档 | 阅读用途 |
@@ -334,3 +359,18 @@ SSE 事件依次为 `user`（已保存的用户消息）、`delta`（安全增�
 3. 数据变更是否同时说明新建库与旧库迁移路径、执行次数和兼容边界；部署变更是否覆盖 `/chat/` 与 WS 转发。
 4. 保留历史 NOTES 和验收范围，新增结论注明当前边界；不能把历史测试记录当成本次重新验证。
 5. 复查 Markdown 链接、`git diff --check` 与变更清单，确保文档和对应代码在同一次提交或同一 PR 中交付。
+
+### 2026-11-08 续作验证补充（未完成）
+
+本次 `dependency:tree` 与 `-DskipTests compile` 成功，生产源码已编译；解析到 Spring AI 1.1.8、
+WebFlux 6.2.19、Reactor Netty 1.2.18，Boot / Java 目标版本 / MyBatis-Plus 未变。
+新增无密钥启动、provider、官方网关与原始 SSE guard 测试，但定向测试在 testCompile 找不到项目生产类型，
+实际执行测试方法 0 个。Maven 运行时自检出现 `Access is denied.`，拒绝来源未确定，按用户要求停止验证，
+未改权限、设置、调用路径或依赖缓存。完整后端与前端 Node 测试未运行，仍不能标记 local-ready-review。
+详细命令、失败情况与未覆盖风险见 [FEATURE_AI_NOTES.md](../FEATURE_AI_NOTES.md) 最新续作记录；前节为此前阶段记录。
+
+### 2026-11-08 本轮路径诊断补充（实际访问拒绝，停止）
+
+已确认 testCompile 实际 classpath 包含生产输出，Java 普通枚举和显式类加载成功；但 JDK javac 文件管理器的 `caseMapCheck` 调用 `Path.toRealPath(NOFOLLOW_LINKS)` 时，对 `backend/target/classes/com/mairy/chat/config` 得到 `AccessDeniedException`。JDK 实现吞掉此 IOException 并忽略包目录，导致测试编译报告项目生产包不存在。底层属于 ACL 还是托管沙箱尚无证据区分，未更改权限或用另一目录 / 入口绕过。
+
+本轮三次窄范围 Maven 测试编译诊断均失败，实际测试执行 0；完整 Maven 回归和前端 Node 测试未运行。Maven 启动时通用 `Access is denied.` 的精确来源仍未证实，不能等同于已定位的 javac 路径拒绝。按用户边界停止后续构建和测试，生产 / 测试代码未改；迁移仍未完成验收。具体命令、路径证据和待验证项见 [FEATURE_AI_NOTES.md](../FEATURE_AI_NOTES.md) 本轮记录。

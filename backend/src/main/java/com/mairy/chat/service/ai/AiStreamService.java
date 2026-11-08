@@ -19,7 +19,7 @@ import org.springframework.web.server.ResponseStatusException;
 @RequiredArgsConstructor
 public class AiStreamService {
     private final AiService ai;
-    private final DeepSeekClient client;
+    private final AiModelGateway client;
     private final SensitiveWordFilter filter;
     private final ObjectMapper json;
     private final Semaphore slots = new Semaphore(8);
@@ -33,7 +33,13 @@ public class AiStreamService {
             response.setCharacterEncoding("UTF-8");
             response.setHeader("Cache-Control", "no-cache, no-transform");
             response.setHeader("X-Accel-Buffering", "no");
-            stream(turn, response.getWriter());
+            try {
+                stream(turn, response.getWriter());
+            } catch (IOException exception) {
+                // 获取 Writer 失败时尚未进入流收尾，仍须释放本轮租约。
+                try { ai.release(turn); } catch (Exception ignored) { log.info("ai_audit type=release_failed"); }
+                throw exception;
+            }
         } finally {
             slots.release();
         }
